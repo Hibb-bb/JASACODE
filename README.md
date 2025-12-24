@@ -6,5 +6,5 @@ python train.py \
   --init-lr 1e-4 \
   --train-size 50000 \
   --test-size 10000 \
-  --output-dir runs/tree_icl \
+  --output-dir runs/ \
   --seed 42
