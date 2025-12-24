@@ -8,9 +8,9 @@ from typing import List, Sequence, Dict, Any, Optional
 import numpy as np
 import torch
 
-from bn_template import BNTemplate
-from multigraph_sampler import sample_many_graphs
-from binary_bn import BNError
+from data.bn_template import BNTemplate
+from data.multigraph_sampler import sample_many_graphs
+from data.binary_bn import BNError
 
 
 @dataclass
