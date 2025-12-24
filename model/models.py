@@ -77,6 +77,7 @@ class NonCausalGPT2BinaryHead(nn.Module):
             # GPT2 is decoder-only by design; we still patch attention modules below.
         )
         self.gpt2 = GPT2Model(cfg)
+        self.max_seq_len = max_seq_len  # Store for position_id clamping
 
         if disable_causal:
             _try_disable_causal_mask(self.gpt2)
@@ -97,8 +98,18 @@ class NonCausalGPT2BinaryHead(nn.Module):
 
         inputs_embeds = self.read_in(x)                 # (B, L, n_embd)
         attn_mask = torch.ones((B, L), device=x.device) # allow full attention
+        
+        # Explicitly create position_ids to avoid out-of-bounds errors
+        # GPT2 needs position_ids when using inputs_embeds
+        # Clamp to max_seq_len to handle sequences longer than training length
+        position_ids = torch.arange(L, device=x.device).unsqueeze(0).expand(B, -1)  # (B, L)
+        position_ids = torch.clamp(position_ids, 0, self.max_seq_len - 1)  # Clamp to valid range
 
-        out = self.gpt2(inputs_embeds=inputs_embeds, attention_mask=attn_mask)
+        out = self.gpt2(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attn_mask,
+            position_ids=position_ids,
+        )
         h = out.last_hidden_state                        # (B, L, n_embd)
 
         h_last = h[:, -1, :]                             # (B, n_embd) test token

@@ -3,18 +3,22 @@ from __future__ import annotations
 import argparse
 from typing import Optional
 import os
-import math
-from dataclasses import dataclass
 
 import torch
-import torch.nn.functional as F
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 
-from models import NonCausalGPT2BinaryHead
-from data import compile_template_from_structure, init_graph_params_beta, ICLBatchSpec, MultiGraphICLSequenceDataset, get_chain, get_tree, get_general
+from data import (
+    compile_template_from_structure,
+    init_graph_params_beta,
+    ICLBatchSpec,
+    MultiGraphICLSequenceDataset,
+    get_chain,
+    get_tree,
+    get_general,
+)
 from utils import evaluate_tv_over_context, ICLLightningModule, EvalSpec
 
 
@@ -88,9 +92,8 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     return args
 
 
-def evaluate(args, model):
+def evaluate(args, model, run_dir):
 
-    from eval_icl_tv import EvalSpec, evaluate_tv_over_context
     if args.graph == "tree":
         bn = get_tree()
 
@@ -101,12 +104,15 @@ def evaluate(args, model):
         bn = get_chain()
 
     template = compile_template_from_structure(bn)
-    p1_list = init_graph_params_beta(template, num_graphs=1, mode="easy", seed=0)  # list of (1, 2^k)
+    # list of (1, 2^k)
+    p1_list = init_graph_params_beta(
+        template, num_graphs=1, mode="easy", seed=7777
+    )
 
     # 4) evaluate
     spec = EvalSpec(
-        context_lens=[1, 2, 5, 10, 20, 50, 100, 200],
-        num_episodes=2000,
+        context_lens=[1, 2, 5, 10, 20, 50, 100, 200,  300, 400, 500],
+        num_episodes=args.test_size,
         seed=123,
         output_csv=run_dir + "eval_tv.csv",
         device="cuda",
@@ -116,7 +122,8 @@ def evaluate(args, model):
 
 
 def main():
-    # You already have get_args(); using direct placeholders here
+
+    print("Getting arguments...")
     args = get_args()
 
     if args.graph == "tree":
@@ -131,23 +138,32 @@ def main():
         target_index = 6
         bn = get_chain()
 
+    print("Compiling template...")
+
     template = compile_template_from_structure(bn)
 
     pl.seed_everything(args.seed, workers=False)
 
-    p1_list_train = init_graph_params_beta(template, num_graphs=args.train_size, mode="easy", seed=args.seed)
-    # p1_list_test = init_graph_params_beta(template, num_graphs=args.test_size, mode="easy", seed=args.seed + 1)
+    print("Initializing graph parameters...")
 
-    # ---- Dataset (your ICL format)
+    p1_list_train = init_graph_params_beta(
+        template, num_graphs=args.train_size, mode="easy", seed=args.seed
+    )
+    # p1_list_test = init_graph_params_beta(
+    #     template, num_graphs=args.test_size, mode="easy", seed=args.seed + 1
+    # )
+    print("Creating batch specification...")
     # L = context_len + 1
     spec = ICLBatchSpec(
         batch_graphs=args.batch_size,
         num_example=args.context_len,
-        target_index=target_index,  # you can make this an arg, or randomize per batch later
+        # you can make this an arg, or randomize per batch later
+        target_index=target_index,
         device=None,     # keep on CPU; Lightning moves to GPU automatically
         dtype=torch.long,
     )
 
+    print("Creating training dataset...")
     train_ds = MultiGraphICLSequenceDataset(
         template=template,
         p1_list=p1_list_train,
@@ -158,7 +174,7 @@ def main():
     train_loader = torch.utils.data.DataLoader(
         train_ds,
         batch_size=None,
-        num_workers=0,
+        num_workers=255,
         pin_memory=True,
     )
 
@@ -186,6 +202,10 @@ def main():
         filename="best",
     )
 
+    print("Creating trainer...")
+
+    torch.set_float32_matmul_precision('high')
+
     trainer = Trainer(
         callbacks=[ckpt_cb],
         max_steps=args.train_step,
@@ -196,13 +216,16 @@ def main():
         enable_checkpointing=True,
         default_root_dir=run_dir,
         gradient_clip_val=1.0,
-        precision="32-true",
+        # precision="32-true",
     )
 
+    print("Training...")
     trainer.fit(lit, train_dataloaders=train_loader)
-    trained_model = lit.model.to(device)  # this is your NonCausalGPT2BinaryHead
+    trained_model = lit.model  # this is your NonCausalGPT2BinaryHead
     trained_model.eval()
-    evaluate(run_dir, trained_model)
+    evaluate(args, trained_model, run_dir)
+
 
 if __name__ == "__main__":
+    print("Starting running...")
     main()

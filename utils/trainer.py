@@ -5,9 +5,7 @@ import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
 
-from models import NonCausalGPT2BinaryHead
-from bn_template import compile_template_from_structure, init_graph_params_beta
-from torch_icL_bn_dataset import ICLBatchSpec, MultiGraphICLSequenceDataset  # the version that returns x:(B,L,D), y:(B,)
+from model import NonCausalGPT2BinaryHead
 
 
 class ICLLightningModule(pl.LightningModule):
