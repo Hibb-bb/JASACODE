@@ -147,7 +147,7 @@ def main():
     print("Initializing graph parameters...")
 
     p1_list_train = init_graph_params_beta(
-        template, num_graphs=args.train_size, mode="easy", seed=args.seed
+        template, num_graphs=args.train_size, mode="medium", seed=args.seed
     )
     # p1_list_test = init_graph_params_beta(
     #     template, num_graphs=args.test_size, mode="easy", seed=args.seed + 1
