@@ -10,9 +10,11 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 
+import numpy as np
+
 from data import (
     compile_template_from_structure,
-    init_graph_params_beta,
+    init_graph_params_uniform,
     ICLBatchSpec,
     MultiGraphICLSequenceDataset,
     get_chain,
@@ -105,8 +107,11 @@ def evaluate(args, model, run_dir):
 
     template = compile_template_from_structure(bn)
     # list of (1, 2^k)
-    p1_list = init_graph_params_beta(
-        template, num_graphs=1, mode="easy", seed=7777
+
+    param_rng = np.random.default_rng(args.seed)
+
+    p1_list = init_graph_params_uniform(
+        template, num_graphs=1,  seed=param_rng
     )
 
     # 4) evaluate
@@ -146,8 +151,8 @@ def main():
 
     print("Initializing graph parameters...")
 
-    p1_list_train = init_graph_params_beta(
-        template, num_graphs=args.train_size, mode="medium", seed=args.seed
+    p1_list_train = init_graph_params_uniform(
+        template, num_graphs=args.train_size, seed=args.seed
     )
     # p1_list_test = init_graph_params_beta(
     #     template, num_graphs=args.test_size, mode="easy", seed=args.seed + 1
@@ -191,7 +196,7 @@ def main():
     )
 
     # ---- Logging + Trainer
-    run_dir = os.path.join(args.output_dir, args.graph, f"seed_{args.seed}")
+    run_dir = os.path.join(args.output_dir, args.graph, f"seed_{args.seed}", args.context_len, args.train_size)
     os.makedirs(run_dir, exist_ok=True)
     logger = CSVLogger(save_dir=run_dir, name="logs")
 
@@ -229,3 +234,7 @@ def main():
 if __name__ == "__main__":
     print("Starting running...")
     main()
+
+
+    # salloc -p debug_a100 -t 02:00:00 --gres=gpu:1
+    # srun --pty bash -l

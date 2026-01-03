@@ -3,45 +3,22 @@ from .binary_bn import BinaryBayesNet
 
 def random_binary_cpt(
     num_parents: int,
-    mode: str = "easy",
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
     """
-    Returns p1[cfg] = P(X=1 | cfg), length 2^num_parents.
+    Returns p1[cfg] = P(X=1 | cfg), length 2^num_parents,
+    with entries i.i.d. Uniform(0, 1).
     """
     if rng is None:
         rng = np.random.default_rng()
 
     K = 1 << num_parents
-
-    if mode == "easy":
-        # high entropy, weak edges
-        alpha = 5.0
-        p = rng.beta(alpha, alpha, size=K)
-
-    elif mode == "medium":
-        # balanced
-        alpha = 1.0
-        p = rng.beta(alpha, alpha, size=K)
-
-    elif mode == "hard":
-        # near-deterministic
-        alpha = 0.3
-        p = rng.beta(alpha, alpha, size=K)
-
-    elif mode == "logit":
-        # logistic-normal
-        sigma = 1.5
-        z = rng.normal(0.0, sigma, size=K)
-        p = 1.0 / (1.0 + np.exp(-z))
-
-    else:
-        raise ValueError(f"Unknown mode '{mode}'")
+    p = rng.random(size=K)   # Uniform(0, 1)
 
     return p.astype(np.float64)
 
 
-def get_general(mode="easy", seed=2000):
+def get_general(seed=2000):
 
     rng = np.random.default_rng(seed)
     bn = BinaryBayesNet()
@@ -62,15 +39,16 @@ def get_general(mode="easy", seed=2000):
     bn.set_parents("E", ["D"])
 
     # Random CPTs
-    bn.set_cpt("A", random_binary_cpt(0, mode, rng))
-    bn.set_cpt("B", random_binary_cpt(1, mode, rng))
-    bn.set_cpt("C", random_binary_cpt(2, mode, rng))
-    bn.set_cpt("D", random_binary_cpt(2, mode, rng))
-    bn.set_cpt("E", random_binary_cpt(1, mode, rng))
+    bn.set_cpt("A", random_binary_cpt(0, rng))
+    bn.set_cpt("B", random_binary_cpt(0, rng))
+    bn.set_cpt("C", random_binary_cpt(2, rng))
+    bn.set_cpt("D", random_binary_cpt(2, rng))
+    bn.set_cpt("E", random_binary_cpt(1, rng))
 
     return bn
 
-def get_chain(mode="easy", seed=2000):
+
+def get_chain(seed=2000):
 
     rng = np.random.default_rng(seed)
     bn = BinaryBayesNet()
@@ -93,17 +71,18 @@ def get_chain(mode="easy", seed=2000):
     bn.set_parents("G", ["F"])
 
     # Random CPTs
-    bn.set_cpt("A", random_binary_cpt(0, mode, rng))
-    bn.set_cpt("B", random_binary_cpt(1, mode, rng))
-    bn.set_cpt("C", random_binary_cpt(1, mode, rng))
-    bn.set_cpt("D", random_binary_cpt(1, mode, rng))
-    bn.set_cpt("E", random_binary_cpt(1, mode, rng))
-    bn.set_cpt("F", random_binary_cpt(1, mode, rng))
-    bn.set_cpt("G", random_binary_cpt(1, mode, rng))
+    bn.set_cpt("A", random_binary_cpt(0, rng))
+    bn.set_cpt("B", random_binary_cpt(1, rng))
+    bn.set_cpt("C", random_binary_cpt(1, rng))
+    bn.set_cpt("D", random_binary_cpt(1, rng))
+    bn.set_cpt("E", random_binary_cpt(1, rng))
+    bn.set_cpt("F", random_binary_cpt(1, rng))
+    bn.set_cpt("G", random_binary_cpt(1, rng))
 
     return bn
 
-def get_tree(mode="easy", seed=2000):
+
+def get_tree(seed=2000):
 
     rng = np.random.default_rng(seed)
     bn = BinaryBayesNet()
@@ -128,12 +107,12 @@ def get_tree(mode="easy", seed=2000):
     bn.set_parents("G", ["C"])
 
     # Random CPTs
-    bn.set_cpt("A", random_binary_cpt(0, mode, rng))
-    bn.set_cpt("B", random_binary_cpt(1, mode, rng))
-    bn.set_cpt("C", random_binary_cpt(1, mode, rng))
-    bn.set_cpt("D", random_binary_cpt(1, mode, rng))
-    bn.set_cpt("E", random_binary_cpt(1, mode, rng))
-    bn.set_cpt("F", random_binary_cpt(1, mode, rng))
-    bn.set_cpt("G", random_binary_cpt(1, mode, rng))
+    bn.set_cpt("A", random_binary_cpt(0, rng))
+    bn.set_cpt("B", random_binary_cpt(1, rng))
+    bn.set_cpt("C", random_binary_cpt(1, rng))
+    bn.set_cpt("D", random_binary_cpt(1, rng))
+    bn.set_cpt("E", random_binary_cpt(1, rng))
+    bn.set_cpt("F", random_binary_cpt(1, rng))
+    bn.set_cpt("G", random_binary_cpt(1, rng))
 
     return bn

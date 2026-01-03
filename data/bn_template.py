@@ -40,36 +40,28 @@ def compile_template_from_structure(bn: BinaryBayesNet) -> BNTemplate:
     )
 
 
-def init_graph_params_beta(
+
+def init_graph_params_uniform(
     template: BNTemplate,
     num_graphs: int,
-    mode: str = "easy",
-    seed: int = 0,
+    seed: int | None = None,
 ) -> List[np.ndarray]:
     """
-    Returns per-node CPT tables for many graphs.
+    Returns per-node CPT tables for many graphs with i.i.d. Uniform(0,1) entries.
 
     Output:
         p1_list: length = num_nodes
-        p1_list[i] has shape (G, 2^k_i), where k_i = in-degree of node i (in topo order)
+        p1_list[i] has shape (G, 2^k_i),
+        where k_i is the in-degree of node i (in topo order).
     """
     rng = np.random.default_rng(seed)
     G = int(num_graphs)
-
-    if mode == "easy":
-        alpha = 5.0      # concentrates near 0.5 (high entropy, weaker dependencies)
-    elif mode == "medium":
-        alpha = 1.0      # uniform on [0,1]
-    elif mode == "hard":
-        alpha = 0.3      # near-deterministic (peaks near 0 and 1)
-    else:
-        raise ValueError(f"Unknown mode '{mode}'")
 
     p1_list: List[np.ndarray] = []
     for parents in template.parent_idx:
         k = int(parents.size)
         K = 1 << k
-        p = rng.beta(alpha, alpha, size=(G, K)).astype(np.float64)
+        p = 0.5 * rng.random(size=(G, K)).astype(np.float64)
         p1_list.append(p)
 
     return p1_list
