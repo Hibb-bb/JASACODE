@@ -21,7 +21,7 @@ from data import (
     get_tree,
     get_general,
 )
-from utils import evaluate_tv_over_context, ICLLightningModule, EvalSpec
+from utils import evaluate_tv_over_context, ICLLightningModule, EvalSpec, evaluate_tv_over_context_with_baselines
 
 
 def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -119,11 +119,12 @@ def evaluate(args, model, run_dir):
         context_lens=[1, 2, 5, 10, 20, 50, 100, 200,  300, 400, 500],
         num_episodes=args.test_size,
         seed=123,
-        output_csv=run_dir + "eval_tv.csv",
+        output_csv=run_dir + "_eval_tv.csv",
         device="cuda",
         infer_batch_size=512,
     )
-    evaluate_tv_over_context(model, template, p1_list, spec)
+    # evaluate_tv_over_context(model, template, p1_list, spec)
+    evaluate_tv_over_context_with_baselines(model, template, p1_list, spec)
 
 
 def main():
@@ -188,15 +189,15 @@ def main():
         input_dim=input_dim,
         init_lr=args.init_lr,
         n_embd=256,
-        n_layer=6,
+        n_layer=12,
         n_head=8,
-        dropout=0.1,
-        max_seq_len=args.context_len + 1,
+        dropout=0.0,
+        max_seq_len=500 + 1,
         disable_causal=True,   # best-effort patch
     )
 
     # ---- Logging + Trainer
-    run_dir = os.path.join(args.output_dir, args.graph, f"seed_{args.seed}", args.context_len, args.train_size)
+    run_dir = os.path.join(args.output_dir, args.graph, f"seed_{args.seed}", str(args.context_len), str(args.train_size))
     os.makedirs(run_dir, exist_ok=True)
     logger = CSVLogger(save_dir=run_dir, name="logs")
 
@@ -238,3 +239,5 @@ if __name__ == "__main__":
 
     # salloc -p debug_a100 -t 02:00:00 --gres=gpu:1
     # srun --pty bash -l
+
+
