@@ -163,15 +163,17 @@ def evaluate_tv_over_context_with_baselines(
 
     Writes a CSV with per-episode predictions and TV distances for all methods.
     """
-    # Basic checks (same as your current function)
+    # Basic checks - support multiple graphs for testing
     N = template.num_nodes
     if len(p1_list_fixed) != N:
         raise BNError("p1_list_fixed must have length equal to template.num_nodes")
+    # Get number of graphs from first node's shape
+    num_graphs = p1_list_fixed[0].shape[0]
     for i, parents in enumerate(template.parent_idx):
         k = int(parents.size)
         K = 1 << k
-        if p1_list_fixed[i].shape != (1, K):
-            raise BNError(f"p1_list_fixed[{i}] must have shape (1,{K}), got {p1_list_fixed[i].shape}")
+        if p1_list_fixed[i].shape != (num_graphs, K):
+            raise BNError(f"p1_list_fixed[{i}] must have shape ({num_graphs},{K}), got {p1_list_fixed[i].shape}")
 
     rng = np.random.default_rng(spec.seed)
 
@@ -212,7 +214,8 @@ def evaluate_tv_over_context_with_baselines(
             while remaining > 0:
                 B = min(remaining, spec.infer_batch_size)
 
-                graph_ids = np.zeros((B,), dtype=np.int64)
+                # Randomly sample which graph to use for each batch element
+                graph_ids = rng.integers(0, num_graphs, size=B, dtype=np.int64)
                 X_full = sample_many_graphs(
                     template=template,
                     p1_list=p1_list_fixed,
@@ -226,11 +229,12 @@ def evaluate_tv_over_context_with_baselines(
                     # True label y_test
                     y_test = X_full[:, L - 1, t].astype(np.int64)  # (B,)
 
-                    # Ground-truth conditional p_true from fixed BN CPT
+                    # Ground-truth conditional p_true from BN CPT (each batch element may use different graph)
                     test_prefix = X_full[:, L - 1, :]  # full values (parents live in <t)
                     parents_idx = template.parent_idx[t]
                     cfg = _compute_parent_cfg(test_prefix, parents_idx)  # (B,)
-                    p_true = p1_list_fixed[t][0, cfg].astype(np.float64)  # (B,)
+                    # Compute p_true using vectorized indexing: p1_list_fixed[t][graph_ids, cfg]
+                    p_true = p1_list_fixed[t][graph_ids, cfg].astype(np.float64)  # (B,)
 
                     # ===== Model prediction =====
                     X_out = _build_icl_x(X_full, target_index=t)  # (B, L, N+1)
@@ -284,17 +288,19 @@ def evaluate_tv_over_context(
     """
     Writes a CSV with per-episode predictions and ground truth.
 
-    p1_list_fixed: length N; each entry shape (1, 2^k_i) for the SINGLE fixed BN.
+    p1_list_fixed: length N; each entry shape (G, 2^k_i) for G different BNs.
     """
-    # Basic checks
+    # Basic checks - support multiple graphs for testing
     N = template.num_nodes
     if len(p1_list_fixed) != N:
         raise BNError("p1_list_fixed must have length equal to template.num_nodes")
+    # Get number of graphs from first node's shape
+    num_graphs = p1_list_fixed[0].shape[0]
     for i, parents in enumerate(template.parent_idx):
         k = int(parents.size)
         K = 1 << k
-        if p1_list_fixed[i].shape != (1, K):
-            raise BNError(f"p1_list_fixed[{i}] must have shape (1,{K}), got {p1_list_fixed[i].shape}")
+        if p1_list_fixed[i].shape != (num_graphs, K):
+            raise BNError(f"p1_list_fixed[{i}] must have shape ({num_graphs},{K}), got {p1_list_fixed[i].shape}")
 
     rng = np.random.default_rng(spec.seed)
 
@@ -332,9 +338,8 @@ def evaluate_tv_over_context(
             while remaining > 0:
                 B = min(remaining, spec.infer_batch_size)
 
-                # Sample B episodes from the single fixed BN in parallel:
-                # graph_ids are all zeros because p1_list_fixed has 1 graph
-                graph_ids = np.zeros((B,), dtype=np.int64)
+                # Randomly sample which graph to use for each batch element
+                graph_ids = rng.integers(0, num_graphs, size=B, dtype=np.int64)
 
                 X_full = sample_many_graphs(
                     template=template,
@@ -360,7 +365,8 @@ def evaluate_tv_over_context(
                     test_prefix = X_full[:, L - 1, :]  # (B, N) full values (use as ground truth for parent config)
                     parents_idx = template.parent_idx[t]
                     cfg = _compute_parent_cfg(test_prefix, parents_idx)  # (B,)
-                    p_true = p1_list_fixed[t][0, cfg]  # (B,) float64
+                    # Compute p_true using vectorized indexing: p1_list_fixed[t][graph_ids, cfg]
+                    p_true = p1_list_fixed[t][graph_ids, cfg].astype(np.float64)  # (B,)
 
                     # Model prediction p_hat
                     x_tensor = torch.as_tensor(X_out, dtype=torch.float32, device=device)  # float for read_in

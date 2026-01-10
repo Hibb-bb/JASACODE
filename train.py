@@ -133,12 +133,12 @@ def evaluate(args, model, run_dir):
         bn = get_chain()
 
     template = compile_template_from_structure(bn)
-    # list of (1, 2^k)
+    # list of (test_size, 2^k)
 
-    param_rng = np.random.default_rng(args.seed)
+    param_rng = np.random.default_rng(args.seed + 1000)  # Different seed for test graphs
 
     p1_list = init_graph_params_uniform(
-        template, num_graphs=1,  seed=param_rng
+        template, num_graphs=args.test_size, seed=param_rng
     )
 
     # 4) evaluate
