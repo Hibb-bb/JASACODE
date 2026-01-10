@@ -15,8 +15,10 @@ from .binary_bn import BNError
 @dataclass
 class ICLBatchSpec:
     batch_graphs: int              # B
-    num_example: int               # number of context examples (L-1)
     target_index: int              # t
+    num_example: Optional[int] = None  # number of context examples (L-1). If None, use min/max.
+    min_context_len: Optional[int] = None  # minimum context length (for dynamic sampling)
+    max_context_len: Optional[int] = None  # maximum context length (for dynamic sampling)
     dtype: torch.dtype = torch.long
     device: Optional[torch.device] = None
 
@@ -34,7 +36,7 @@ class MultiGraphICLSequenceDataset(IterableDataset):
 
     Output:
       batch["x"]: (B, L, N+1) masked, last dim is target index
-      batch["y"]: (B, L, N)   unmasked ground truth node values (optional but useful)
+      batch["y"]: (B,) population CPT estimates from context examples (Bayesian estimation with known DAG structure)
       batch["graph_id"]: (B,) graph ids
       batch["topo_nodes"]: list[str] node names in column order
       batch["target_index"]: int
@@ -68,7 +70,6 @@ class MultiGraphICLSequenceDataset(IterableDataset):
 
     def __iter__(self) -> Iterator[Dict[str, Any]]:
         B = int(self.spec.batch_graphs)
-        L = int(self.spec.num_example) + 1
         t = int(self.spec.target_index)
         N = int(self.template.num_nodes)
 
@@ -76,6 +77,21 @@ class MultiGraphICLSequenceDataset(IterableDataset):
         device = self.spec.device
 
         while True:
+            # Determine context length for this batch (same for all batch elements)
+            if self.spec.num_example is not None:
+                # Fixed context length
+                num_examples = int(self.spec.num_example)
+            elif self.spec.min_context_len is not None and self.spec.max_context_len is not None:
+                # Dynamic: randomly sample context length per batch
+                num_examples = int(self.rng.integers(
+                    self.spec.min_context_len, 
+                    self.spec.max_context_len + 1  # inclusive upper bound
+                ))
+            else:
+                raise BNError("Must specify either num_example or (min_context_len, max_context_len)")
+            
+            L = num_examples + 1  # total sequence length (context + test token)
+            
             # Sample B graphs/tasks
             graph_ids = self.rng.integers(0, self.num_graphs, size=B, dtype=np.int64)
 
@@ -90,7 +106,52 @@ class MultiGraphICLSequenceDataset(IterableDataset):
 
             # Masked copy
             X_mask = X_full.copy()
-            y = X_full[:, L - 1, t].astype(np.int64)  # (B,)
+            
+            # Compute population CPT estimate from context examples (Bayesian estimation with known DAG structure)
+            # This estimates P(X_t=1 | parent_config) from the context examples, not from ground truth CPT
+            m = L - 1  # number of context examples
+            parents_idx = self.template.parent_idx[t]
+            k = int(parents_idx.size)
+            K = 1 << k  # number of possible parent configurations
+            
+            # Context examples for estimating CPT
+            X_ctx = X_full[:, :m, :]  # (B, m, N)
+            y_ctx = X_ctx[:, :, t].astype(np.int64)  # (B, m) - target values in context
+            
+            # Compute parent configurations for context examples and test token
+            if k == 0:
+                cfg_ctx = np.zeros((B, m), dtype=np.int64)
+                cfg_test = np.zeros((B,), dtype=np.int64)
+            else:
+                # Flatten context for parent config computation
+                X_ctx_flat = X_ctx.reshape(B * m, N)
+                parents_vals_ctx = X_ctx_flat[:, parents_idx].astype(np.int64)  # (B*m, k)
+                weights = (1 << np.arange(k, dtype=np.int64))[None, :]  # (1, k)
+                cfg_ctx = (parents_vals_ctx * weights).sum(axis=1).reshape(B, m)  # (B, m)
+                
+                # Test token parent configuration
+                test_prefix = X_full[:, L - 1, :]  # (B, N) - test token values
+                parents_vals_test = test_prefix[:, parents_idx].astype(np.int64)  # (B, k)
+                cfg_test = (parents_vals_test * weights).sum(axis=1)  # (B,)
+            
+            # Estimate CPT from context examples using Beta prior (alpha=beta=0.0 = maximum likelihood)
+            # For each batch element, estimate P(X_t=1 | cfg) from context counts
+            y = np.empty((B,), dtype=np.float32)
+            alpha, beta = 0.0, 0.0  # Beta prior parameters (0.0 = no smoothing, use 0.5 for Laplace smoothing)
+            for i in range(B):
+                # Count occurrences of each parent configuration in context
+                tot = np.bincount(cfg_ctx[i], minlength=K).astype(np.float64)  # (K,)
+                one = np.bincount(cfg_ctx[i], weights=y_ctx[i], minlength=K).astype(np.float64)  # (K,)
+                cfg = int(cfg_test[i])
+                
+                if tot[cfg] > 0:
+                    # Bayesian estimate: P(X_t=1 | cfg) = (alpha + count_1) / (alpha + beta + count_total)
+                    y[i] = float((alpha + one[cfg]) / (alpha + beta + tot[cfg]))
+                else:
+                    # No examples with this parent configuration: fall back to marginal P(X_t=1) from context
+                    marginal_p = float(y_ctx[i].mean()) if m > 0 else 0.5
+                    y[i] = marginal_p
+            
             # Context rows: mask strictly future nodes (t+1:)
             if t + 1 < N:
                 X_mask[:, : L - 1, t + 1 :] = 0
@@ -107,7 +168,7 @@ class MultiGraphICLSequenceDataset(IterableDataset):
                 "graph_id": torch.as_tensor(graph_ids, dtype=torch.long, device=device),
                 "topo_nodes": self.topo_nodes,
                 "target_index": t,
-                "y": torch.as_tensor(y, dtype=dtype, device=device),         # (B,)
+                "y": torch.as_tensor(y, dtype=torch.float32, device=device),         # (B,) - now probabilities
             }
 
             if self.return_full:

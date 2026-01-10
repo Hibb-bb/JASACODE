@@ -13,40 +13,53 @@ source .venv/bin/activate
 
 
 
-for seed in 1111; do
-
-  CUDA_LAUNCH_BLOCKING=1 python train.py \
-  --batch-size 64 \
-  --context-len 50 \
-  --graph general \
-  --train-step 30000 \
-  --init-lr 1e-4 \
-  --train-size 20000 \
-  --test-size 5000 \
-  --output-dir runs/ \
-  --seed $seed
+for seed in 1111 2222 3333 4444 5555; do
 
   CUDA_LAUNCH_BLOCKING=1 python train.py \
     --batch-size 64 \
-    --context-len 50 \
+    --min-context-len 5 \
+    --max-context-len 500 \
     --graph tree \
-    --train-step 30000 \
+    --train-step 10000 \
     --init-lr 1e-4 \
     --train-size 20000 \
     --test-size 5000 \
     --output-dir runs/ \
+    --warmup-steps 2000 \
+    --min-lr 1e-6 \
+    --init-lr 3e-4 \
     --seed $seed
 
 
   CUDA_LAUNCH_BLOCKING=1 python train.py \
     --batch-size 64 \
-    --context-len 50 \
+    --min-context-len 5 \
+    --max-context-len 500 \
     --graph chain \
-    --train-step 30000 \
+    --train-step 10000 \
     --init-lr 1e-4 \
     --train-size 20000 \
     --test-size 5000 \
     --output-dir runs/ \
+    --warmup-steps 2000 \
+    --min-lr 1e-6 \
+    --init-lr 3e-4 \
+    --seed $seed
+
+
+  CUDA_LAUNCH_BLOCKING=1 python train.py \
+    --batch-size 64 \
+    --min-context-len 5 \
+    --max-context-len 500 \
+    --graph general \
+    --train-step 10000 \
+    --init-lr 1e-4 \
+    --train-size 20000 \
+    --test-size 5000 \
+    --output-dir runs/ \
+    --warmup-steps 2000 \
+    --min-lr 1e-6 \
+    --init-lr 3e-4 \
     --seed $seed
 
 
@@ -54,40 +67,56 @@ for seed in 1111; do
 done
 
 
-for seed in 1111; do
 
-  CUDA_LAUNCH_BLOCKING=1 python train.py \
-  --batch-size 64 \
-  --context-len 100 \
-  --graph general \
-  --train-step 30000 \
-  --init-lr 1e-4 \
-  --train-size 20000 \
-  --test-size 5000 \
-  --output-dir runs/ \
-  --seed $seed
+
+for seed in 1111 2222 3333 4444 5555; do
 
   CUDA_LAUNCH_BLOCKING=1 python train.py \
     --batch-size 64 \
-    --context-len 100 \
+    --min-context-len 5 \
+    --max-context-len 500 \
     --graph tree \
-    --train-step 30000 \
+    --train-step 10000 \
     --init-lr 1e-4 \
     --train-size 20000 \
     --test-size 5000 \
     --output-dir runs/ \
+    --warmup-steps 2000 \
+    --min-lr 1e-6 \
+    --init-lr 3e-4 \
     --seed $seed
 
 
   CUDA_LAUNCH_BLOCKING=1 python train.py \
     --batch-size 64 \
-    --context-len 100 \
+    --min-context-len 5 \
+    --max-context-len 500 \
     --graph chain \
-    --train-step 30000 \
+    --train-step 10000 \
     --init-lr 1e-4 \
     --train-size 20000 \
     --test-size 5000 \
     --output-dir runs/ \
+    --warmup-steps 2000 \
+    --min-lr 1e-6 \
+    --init-lr 3e-4 \
     --seed $seed
+
+
+  CUDA_LAUNCH_BLOCKING=1 python train.py \
+    --batch-size 64 \
+    --min-context-len 5 \
+    --max-context-len 500 \
+    --graph general \
+    --train-step 10000 \
+    --init-lr 1e-4 \
+    --train-size 20000 \
+    --test-size 5000 \
+    --output-dir runs/ \
+    --warmup-steps 2000 \
+    --min-lr 1e-6 \
+    --init-lr 3e-4 \
+    --seed $seed
+
 
 done
