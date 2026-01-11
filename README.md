@@ -10,6 +10,9 @@ uv sync
 
 **Local:**
 ```bash
+
+# python train.py --warmup-steps 2000 --min-lr 1e-6 --init-lr 3e-4
+
 python train.py \
   --batch-size 64 \
   --context-len 50 \
@@ -19,7 +22,10 @@ python train.py \
   --train-size 20000 \
   --test-size 5000 \
   --output-dir runs/ \
-  --seed 42
+  --warmup-steps 2000 \
+  --min-lr 1e-6 \
+  --init-lr 3e-4 \
+  --seed 42 
 ```
 
 The graph argument can be in ['tree', 'general', 'chain'] 

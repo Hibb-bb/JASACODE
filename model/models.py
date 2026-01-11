@@ -82,6 +82,11 @@ class NonCausalGPT2BinaryHead(nn.Module):
         if disable_causal:
             _try_disable_causal_mask(self.gpt2)
 
+        if hasattr(self.gpt2, 'wpe'):
+            # wpe is the positional embedding layer in GPT2Model
+            nn.init.zeros_(self.gpt2.wpe.weight)
+            self.gpt2.wpe.weight.requires_grad = False
+            
         self.read_in = nn.Linear(input_dim, n_embd)
         self.read_out = nn.Linear(n_embd, 1)
 

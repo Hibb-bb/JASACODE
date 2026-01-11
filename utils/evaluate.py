@@ -71,6 +71,214 @@ def _build_icl_x(
     return X_out  # (B, L, N+1)
 
 
+def _naive_marginal_from_context(
+    X_full: np.ndarray,   # (B, L, N)
+    target_index: int,    # t
+    *,
+    alpha: float = 0.0,   # Beta prior
+    beta: float = 0.0,
+) -> np.ndarray:
+    """
+    Naive baseline: estimate P(X_t=1) from context examples only, ignoring parents/graph.
+    Uses Beta(alpha,beta) smoothing.
+    Returns (B,) float64.
+    """
+    B, L, N = X_full.shape
+    m = L - 1
+    t = int(target_index)
+    ctx = X_full[:, :m, t].astype(np.float64)  # (B,m)
+    s1 = ctx.sum(axis=1)                       # (B,)
+    return (alpha + s1) / (alpha + beta + m)
+
+
+def _bayes_cpt_from_context(
+    X_full: np.ndarray,        # (B, L, N)
+    template: BNTemplate,
+    target_index: int,         # t
+    *,
+    alpha: float = 0.0,        # Beta prior for each CPT entry
+    beta: float = 0.0,
+) -> np.ndarray:
+    """
+    Bayesian baseline with known DAG structure:
+      - For each episode i, estimate CPT for node t from context examples:
+            P(X_t=1 | cfg) = (alpha + count_1(cfg)) / (alpha+beta + count_total(cfg))
+      - Then evaluate at cfg_test computed from test token parent values.
+    Returns (B,) float64.
+
+    Notes:
+    - This is per-episode inference: each batch element has its own estimated CPT from its own ICL context.
+    - Parent configuration encoding matches _compute_parent_cfg.
+    """
+    B, L, N = X_full.shape
+    m = L - 1
+    t = int(target_index)
+    parents_idx = template.parent_idx[t]
+    k = int(parents_idx.size)
+    K = 1 << k
+
+    # Context tensors
+    X_ctx = X_full[:, :m, :]              # (B,m,N)
+    y_ctx = X_ctx[:, :, t].astype(np.int64)  # (B,m)
+
+    # For cfg we need (B,m) of parent-config ids
+    if k == 0:
+        cfg_ctx = np.zeros((B, m), dtype=np.int64)
+        cfg_test = np.zeros((B,), dtype=np.int64)
+    else:
+        # compute cfg per row by flattening and reshaping
+        cfg_ctx = _compute_parent_cfg(
+            X_ctx.reshape(B * m, N), parents_idx
+        ).reshape(B, m)
+        cfg_test = _compute_parent_cfg(
+            X_full[:, L - 1, :], parents_idx
+        )  # (B,)
+
+    # Estimate per-episode CPT entry for cfg_test
+    p_hat = np.empty((B,), dtype=np.float64)
+    for i in range(B):
+        # counts per cfg
+        tot = np.bincount(cfg_ctx[i], minlength=K).astype(np.float64)  # (K,)
+        one = np.bincount(cfg_ctx[i], weights=y_ctx[i], minlength=K).astype(np.float64)  # (K,)
+        cfg = int(cfg_test[i])
+        p_hat[i] = (alpha + one[cfg]) / (alpha + beta + tot[cfg])
+    return p_hat
+
+
+def evaluate_tv_over_context_with_baselines(
+    model: torch.nn.Module,
+    template: BNTemplate,
+    p1_list_fixed: List[np.ndarray],
+    spec: EvalSpec,
+    *,
+    naive_alpha: float = 0.5,
+    naive_beta: float = 0.5,
+    bayes_alpha: float = 0.5,
+    bayes_beta: float = 0.5,
+) -> None:
+    """
+    Like evaluate_tv_over_context, but also computes:
+      (1) naive marginal baseline from ICL context
+      (2) Bayesian CPT-estimation baseline (known DAG)
+
+    Writes a CSV with per-episode predictions and TV distances for all methods.
+    """
+    # Basic checks - support multiple graphs for testing
+    N = template.num_nodes
+    if len(p1_list_fixed) != N:
+        raise BNError("p1_list_fixed must have length equal to template.num_nodes")
+    # Get number of graphs from first node's shape
+    num_graphs = p1_list_fixed[0].shape[0]
+    for i, parents in enumerate(template.parent_idx):
+        k = int(parents.size)
+        K = 1 << k
+        if p1_list_fixed[i].shape != (num_graphs, K):
+            raise BNError(f"p1_list_fixed[{i}] must have shape ({num_graphs},{K}), got {p1_list_fixed[i].shape}")
+
+    rng = np.random.default_rng(spec.seed)
+
+    device = torch.device(spec.device)
+    model = model.to(device)
+    model.eval()
+
+    out_path = Path(spec.output_csv)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fieldnames = [
+        "context_len",
+        "target_index",
+        "episode",
+        # ground truth
+        "p_true",
+        "y_test",
+        "parents_cfg",
+        # model
+        "p_hat_model",
+        "tv_model",
+        # baselines
+        "p_hat_naive",
+        "tv_naive",
+        "p_hat_bayes",
+        "tv_bayes",
+    ]
+
+    with out_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for m in spec.context_lens:
+            L = int(m) + 1
+            remaining = int(spec.num_episodes)
+            episode_offset = 0
+
+            while remaining > 0:
+                B = min(remaining, spec.infer_batch_size)
+
+                # Randomly sample which graph to use for each batch element
+                graph_ids = rng.integers(0, num_graphs, size=B, dtype=np.int64)
+                X_full = sample_many_graphs(
+                    template=template,
+                    p1_list=p1_list_fixed,
+                    graph_ids=graph_ids,
+                    num_examples=L,
+                    rng=rng,
+                )  # (B, L, N)
+
+                # For each target node, run everything
+                for t in range(N):
+                    # True label y_test
+                    y_test = X_full[:, L - 1, t].astype(np.int64)  # (B,)
+
+                    # Ground-truth conditional p_true from BN CPT (each batch element may use different graph)
+                    test_prefix = X_full[:, L - 1, :]  # full values (parents live in <t)
+                    parents_idx = template.parent_idx[t]
+                    cfg = _compute_parent_cfg(test_prefix, parents_idx)  # (B,)
+                    # Compute p_true using vectorized indexing: p1_list_fixed[t][graph_ids, cfg]
+                    p_true = p1_list_fixed[t][graph_ids, cfg].astype(np.float64)  # (B,)
+
+                    # ===== Model prediction =====
+                    X_out = _build_icl_x(X_full, target_index=t)  # (B, L, N+1)
+                    x_tensor = torch.as_tensor(X_out, dtype=torch.float32, device=device)
+                    with torch.no_grad():
+                        logits = model(x_tensor)  # expected (B,)
+                        p_hat_model = torch.sigmoid(logits).detach().cpu().numpy().astype(np.float64)
+                    tv_model = np.abs(p_hat_model - p_true)
+
+                    # ===== Baseline (1): naive marginal =====
+                    p_hat_naive = _naive_marginal_from_context(
+                        X_full, t, alpha=naive_alpha, beta=naive_beta
+                    ).astype(np.float64)
+                    tv_naive = np.abs(p_hat_naive - p_true)
+
+                    # ===== Baseline (2): Bayesian CPT from context =====
+                    p_hat_bayes = _bayes_cpt_from_context(
+                        X_full, template, t, alpha=bayes_alpha, beta=bayes_beta
+                    ).astype(np.float64)
+                    tv_bayes = np.abs(p_hat_bayes - p_true)
+
+                    # Write per-episode rows
+                    for i in range(B):
+                        writer.writerow(
+                            {
+                                "context_len": int(m),
+                                "target_index": int(t),
+                                "episode": int(episode_offset + i),
+                                "p_true": float(p_true[i]),
+                                "y_test": int(y_test[i]),
+                                "parents_cfg": int(cfg[i]),
+                                "p_hat_model": float(p_hat_model[i]),
+                                "tv_model": float(tv_model[i]),
+                                "p_hat_naive": float(p_hat_naive[i]),
+                                "tv_naive": float(tv_naive[i]),
+                                "p_hat_bayes": float(p_hat_bayes[i]),
+                                "tv_bayes": float(tv_bayes[i]),
+                            }
+                        )
+
+                episode_offset += B
+                remaining -= B
+
+
 def evaluate_tv_over_context(
     model: torch.nn.Module,
     template: BNTemplate,
@@ -80,17 +288,19 @@ def evaluate_tv_over_context(
     """
     Writes a CSV with per-episode predictions and ground truth.
 
-    p1_list_fixed: length N; each entry shape (1, 2^k_i) for the SINGLE fixed BN.
+    p1_list_fixed: length N; each entry shape (G, 2^k_i) for G different BNs.
     """
-    # Basic checks
+    # Basic checks - support multiple graphs for testing
     N = template.num_nodes
     if len(p1_list_fixed) != N:
         raise BNError("p1_list_fixed must have length equal to template.num_nodes")
+    # Get number of graphs from first node's shape
+    num_graphs = p1_list_fixed[0].shape[0]
     for i, parents in enumerate(template.parent_idx):
         k = int(parents.size)
         K = 1 << k
-        if p1_list_fixed[i].shape != (1, K):
-            raise BNError(f"p1_list_fixed[{i}] must have shape (1,{K}), got {p1_list_fixed[i].shape}")
+        if p1_list_fixed[i].shape != (num_graphs, K):
+            raise BNError(f"p1_list_fixed[{i}] must have shape ({num_graphs},{K}), got {p1_list_fixed[i].shape}")
 
     rng = np.random.default_rng(spec.seed)
 
@@ -128,9 +338,8 @@ def evaluate_tv_over_context(
             while remaining > 0:
                 B = min(remaining, spec.infer_batch_size)
 
-                # Sample B episodes from the single fixed BN in parallel:
-                # graph_ids are all zeros because p1_list_fixed has 1 graph
-                graph_ids = np.zeros((B,), dtype=np.int64)
+                # Randomly sample which graph to use for each batch element
+                graph_ids = rng.integers(0, num_graphs, size=B, dtype=np.int64)
 
                 X_full = sample_many_graphs(
                     template=template,
@@ -156,7 +365,8 @@ def evaluate_tv_over_context(
                     test_prefix = X_full[:, L - 1, :]  # (B, N) full values (use as ground truth for parent config)
                     parents_idx = template.parent_idx[t]
                     cfg = _compute_parent_cfg(test_prefix, parents_idx)  # (B,)
-                    p_true = p1_list_fixed[t][0, cfg]  # (B,) float64
+                    # Compute p_true using vectorized indexing: p1_list_fixed[t][graph_ids, cfg]
+                    p_true = p1_list_fixed[t][graph_ids, cfg].astype(np.float64)  # (B,)
 
                     # Model prediction p_hat
                     x_tensor = torch.as_tensor(X_out, dtype=torch.float32, device=device)  # float for read_in
