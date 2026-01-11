@@ -293,15 +293,12 @@ def main():
         print(f"Using fixed context length: {args.context_len}")
 
     if args.graph == "tree":
-        target_index = 6
         bn = get_tree()
 
     elif args.graph == "general":
-        target_index = 4
         bn = get_general()
 
     elif args.graph == "chain":
-        target_index = 6
         bn = get_chain()
 
     print("Compiling template...")
@@ -319,13 +316,14 @@ def main():
     #     template, num_graphs=args.test_size, mode="easy", seed=args.seed + 1
     # )
     print("Creating batch specification...")
+    print("Using random target index sampling per batch (all target indices will be trained)")
     # Determine if using fixed or dynamic context length
     if args.context_len is not None:
         # Fixed context length
         print(f"Using fixed context length: {args.context_len}")
         spec = ICLBatchSpec(
             batch_graphs=args.batch_size,
-            target_index=target_index,
+            target_index=None,  # Randomly sample target index per batch
             num_example=args.context_len,
             device=None,     # keep on CPU; Lightning moves to GPU automatically
             dtype=torch.long,
@@ -335,7 +333,7 @@ def main():
         print(f"Using dynamic context length: {args.min_context_len} to {args.max_context_len}")
         spec = ICLBatchSpec(
             batch_graphs=args.batch_size,
-            target_index=target_index,
+            target_index=None,  # Randomly sample target index per batch
             num_example=None,  # Use dynamic sampling
             min_context_len=args.min_context_len,
             max_context_len=args.max_context_len,

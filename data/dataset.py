@@ -15,7 +15,7 @@ from .binary_bn import BNError
 @dataclass
 class ICLBatchSpec:
     batch_graphs: int              # B
-    target_index: int              # t
+    target_index: Optional[int] = None  # t. If None, randomly sample per batch
     num_example: Optional[int] = None  # number of context examples (L-1). If None, use min/max.
     min_context_len: Optional[int] = None  # minimum context length (for dynamic sampling)
     max_context_len: Optional[int] = None  # maximum context length (for dynamic sampling)
@@ -62,21 +62,31 @@ class MultiGraphICLSequenceDataset(IterableDataset):
         if len(p1_list) != template.num_nodes:
             raise BNError("p1_list length must match template.num_nodes")
 
-        t = int(spec.target_index)
-        if not (0 <= t < template.num_nodes):
-            raise BNError(f"target_index must be in [0, {template.num_nodes - 1}]")
+        # Validate target_index if provided, otherwise will sample randomly per batch
+        if spec.target_index is not None:
+            t = int(spec.target_index)
+            if not (0 <= t < template.num_nodes):
+                raise BNError(f"target_index must be in [0, {template.num_nodes - 1}]")
 
         self.topo_nodes = list(template.topo_nodes)
+        self.num_nodes = template.num_nodes
 
     def __iter__(self) -> Iterator[Dict[str, Any]]:
         B = int(self.spec.batch_graphs)
-        t = int(self.spec.target_index)
-        N = int(self.template.num_nodes)
+        N = int(self.num_nodes)
 
         dtype = self.spec.dtype
         device = self.spec.device
 
         while True:
+            # Determine target index for this batch (same for all batch elements)
+            if self.spec.target_index is not None:
+                # Fixed target index
+                t = int(self.spec.target_index)
+            else:
+                # Dynamic: randomly sample target index per batch
+                t = int(self.rng.integers(0, N, dtype=np.int64))
+            
             # Determine context length for this batch (same for all batch elements)
             if self.spec.num_example is not None:
                 # Fixed context length
