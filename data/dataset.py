@@ -70,13 +70,13 @@ class MultiGraphICLSequenceDataset(IterableDataset):
 
     def __iter__(self) -> Iterator[Dict[str, Any]]:
         B = int(self.spec.batch_graphs)
-        t = int(self.spec.target_index)
         N = int(self.template.num_nodes)
-
         dtype = self.spec.dtype
         device = self.spec.device
 
         while True:
+            # Sample target node for THIS batch (different each batch)
+            t = int(self.rng.integers(0, N, dtype=np.int64))
             # Determine context length for this batch (same for all batch elements)
             if self.spec.num_example is not None:
                 # Fixed context length

@@ -19,8 +19,10 @@ from .binary_bn import BNError
 class MixedICLBatchSpec:
     """Batch specification for mixed-structure training."""
     batch_graphs: int              # B (total batch size)
-    num_example: int               # number of context examples (L-1)
     target_index: int              # t
+    num_example: Optional[int] = None               # number of context examples (L-1). If None, use min/max.
+    min_context_len: Optional[int] = None          # minimum context length (for dynamic sampling)
+    max_context_len: Optional[int] = None          # maximum context length (for dynamic sampling)
     dtype: torch.dtype = torch.long
     device: Optional[torch.device] = None
 
@@ -93,8 +95,6 @@ class MixedGraphICLSequenceDataset(IterableDataset):
 
     def __iter__(self) -> Iterator[Dict[str, Any]]:
         B = int(self.spec.batch_graphs)
-        L = int(self.spec.num_example) + 1
-        t = int(self.spec.target_index)
         N = self.num_nodes
 
         dtype = self.spec.dtype
@@ -114,6 +114,23 @@ class MixedGraphICLSequenceDataset(IterableDataset):
                 remaining -= n_samples
 
         while True:
+            # Sample target node for THIS batch (different each batch)
+            t = int(self.rng.integers(0, N, dtype=np.int64))
+            # Determine context length for this batch (same for all batch elements)
+            if self.spec.num_example is not None:
+                # Fixed context length
+                num_examples = int(self.spec.num_example)
+            elif self.spec.min_context_len is not None and self.spec.max_context_len is not None:
+                # Dynamic: randomly sample context length per batch
+                num_examples = int(self.rng.integers(
+                    self.spec.min_context_len, 
+                    self.spec.max_context_len + 1  # inclusive upper bound
+                ))
+            else:
+                raise BNError("Must specify either num_example or (min_context_len, max_context_len)")
+            
+            L = num_examples + 1  # total sequence length (context + test token)
+            
             # Storage for batch
             X_full_batch = []
             X_mask_batch = []
@@ -151,8 +168,49 @@ class MixedGraphICLSequenceDataset(IterableDataset):
                 # Test row: mask target and future (t:)
                 X_mask[:, L - 1, t:] = 0
 
-                # Extract targets (last row, target column)
-                y = X_full[:, L - 1, t].astype(np.int64)  # (B_struct,)
+                # Compute Bayesian CPT estimate from context (matches single-graph approach)
+                m = L - 1  # number of context examples
+                template = self.templates[struct_idx]
+                parents_idx = template.parent_idx[t]
+                k = int(parents_idx.size)
+                K = 1 << k  # number of possible parent configurations
+                
+                # Context examples for estimating CPT
+                X_ctx = X_full[:, :m, :]  # (B_struct, m, N)
+                y_ctx = X_ctx[:, :, t].astype(np.int64)  # (B_struct, m) - target values in context
+                
+                # Compute parent configurations for context examples and test token
+                if k == 0:
+                    cfg_ctx = np.zeros((B_struct, m), dtype=np.int64)
+                    cfg_test = np.zeros((B_struct,), dtype=np.int64)
+                else:
+                    # Flatten context for parent config computation
+                    X_ctx_flat = X_ctx.reshape(B_struct * m, N)
+                    parents_vals_ctx = X_ctx_flat[:, parents_idx].astype(np.int64)  # (B_struct*m, k)
+                    weights = (1 << np.arange(k, dtype=np.int64))[None, :]  # (1, k)
+                    cfg_ctx = (parents_vals_ctx * weights).sum(axis=1).reshape(B_struct, m)  # (B_struct, m)
+                    
+                    # Test token parent configuration
+                    test_prefix = X_full[:, L - 1, :]  # (B_struct, N) - test token values
+                    parents_vals_test = test_prefix[:, parents_idx].astype(np.int64)  # (B_struct, k)
+                    cfg_test = (parents_vals_test * weights).sum(axis=1)  # (B_struct,)
+                
+                # Estimate CPT from context examples using Beta prior (alpha=beta=0.0 = maximum likelihood)
+                y = np.empty((B_struct,), dtype=np.float32)
+                alpha, beta = 0.0, 0.0  # Beta prior parameters
+                for i in range(B_struct):
+                    # Count occurrences of each parent configuration in context
+                    tot = np.bincount(cfg_ctx[i], minlength=K).astype(np.float64)  # (K,)
+                    one = np.bincount(cfg_ctx[i], weights=y_ctx[i], minlength=K).astype(np.float64)  # (K,)
+                    cfg = int(cfg_test[i])
+                    
+                    if tot[cfg] > 0:
+                        # Bayesian estimate: P(X_t=1 | cfg) = (alpha + count_1) / (alpha + beta + count_total)
+                        y[i] = float((alpha + one[cfg]) / (alpha + beta + tot[cfg]))
+                    else:
+                        # No examples with this parent configuration: fall back to marginal P(X_t=1) from context
+                        marginal_p = float(y_ctx[i].mean()) if m > 0 else 0.5
+                        y[i] = marginal_p
 
                 # Store
                 X_full_batch.append(X_full)
@@ -182,7 +240,7 @@ class MixedGraphICLSequenceDataset(IterableDataset):
 
             batch: Dict[str, Any] = {
                 "x": torch.as_tensor(X_out, dtype=dtype, device=device),  # (B, L, N+1)
-                "y": torch.as_tensor(y_combined, dtype=dtype, device=device),  # (B,)
+                "y": torch.as_tensor(y_combined, dtype=torch.float32, device=device),  # (B,) - now probabilities
                 "graph_id": torch.as_tensor(graph_id_combined, dtype=torch.long, device=device),  # (B,)
                 "structure_id": torch.as_tensor(structure_id_combined, dtype=torch.long, device=device),  # (B,)
                 "topo_nodes": self.topo_nodes,

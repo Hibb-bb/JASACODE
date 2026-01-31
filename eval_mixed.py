@@ -23,7 +23,7 @@ from data import (
     get_mixed_graph_structures,
     get_structure_names,
 )
-from utils import evaluate_tv_over_context, EvalSpec
+from utils import evaluate_tv_over_context_with_baselines, EvalSpec
 from utils.trainer import ICLLightningModule
 
 
@@ -155,7 +155,7 @@ def main():
         print(f"  Episodes per context length: {args.test_size}")
         print(f"  Output CSV: {output_csv}")
         
-        evaluate_tv_over_context(model, template, p1_list, eval_spec)
+        evaluate_tv_over_context_with_baselines(model, template, p1_list, eval_spec)
         
         print(f"✓ Completed evaluation on {name}")
     

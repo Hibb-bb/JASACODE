@@ -18,6 +18,7 @@ class ICLLightningModule(pl.LightningModule):
         max_steps: int = 100_000,
         warmup_steps: int = 1000,
         min_lr: float = 0.0,
+        loss_type: str = "l1",  # "l1" (TV/MAE) or "mse" (L2)
         **model_kwargs,
     ) -> None:
         super().__init__()
@@ -29,6 +30,7 @@ class ICLLightningModule(pl.LightningModule):
         self.max_steps = max_steps
         self.warmup_steps = warmup_steps
         self.min_lr = min_lr
+        self.loss_type = loss_type.lower()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.model(x)
@@ -38,12 +40,21 @@ class ICLLightningModule(pl.LightningModule):
         y = batch["y"]  # (B,) - now probabilities in [0,1]
         logits = self(x)
         
-        # Convert logits to probabilities and compute MSE loss (matching evaluation metric)
+        # Convert logits to probabilities
         p_hat = torch.sigmoid(logits)  # (B,)
-        loss = F.mse_loss(p_hat, y.float())
+        
+        # Compute loss based on loss_type
+        if self.loss_type == "l1":
+            # L1 loss (MAE / TV distance) - matches evaluation metric
+            loss = F.l1_loss(p_hat, y.float())
+        elif self.loss_type == "mse":
+            # MSE loss (L2)
+            loss = F.mse_loss(p_hat, y.float())
+        else:
+            raise ValueError(f"Unknown loss_type: {self.loss_type}")
 
         with torch.no_grad():
-            # Compute TV distance as metric (matching evaluation metric)
+            # Always compute TV distance as metric for logging (regardless of loss type)
             tv = torch.abs(p_hat - y.float()).mean()
         
         # Log learning rate from optimizer (safe access pattern)
