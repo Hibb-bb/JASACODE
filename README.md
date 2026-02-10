@@ -13,22 +13,27 @@ uv sync
 
 
 - 7 Node configuration <br>
-```sh 7-node.sh```
+```bash
+sh 7-node.sh
+```
 
 - 5 Node configuration <br>
-```sh 5-node.sh```
-
+```bash
+sh 5-node.sh
+```
 results will be stored in the `runs/` folder for each random seed, `quick_plot.py` will aggregate experiments across seeds.
 For a single run, 10k steps training takes 5 minutes to finish. The overall process takes roughly 10 minutes including evaluation.
 
 All simulations are done on a single NVIDIA-A100 GPU.
 
 - Loss curve visualization example <br>
-`python3 plot_loss.py --metrics_csv runs/tree5/seed_1234/50to500/20000/logs/version_0/metrics.csv --output ./loss.png`
+```bash
+python3 plot_loss.py --metrics_csv runs/tree5/seed_1234/50to500/20000/logs/version_0/metrics.csv --output ./loss.png
+```
 
 - Training script with dynamic sequence length
 
-```
+```python
   python train.py \
     --batch-size 16 \
     --min-context-len 50 \
@@ -47,7 +52,7 @@ All simulations are done on a single NVIDIA-A100 GPU.
 
 - Training script with fixed sequence length
 
-```
+```python
   python train.py \
     --batch-size 16 \
     --context-len 100 \
@@ -69,7 +74,7 @@ To train transformers on custom binary network structure, see `data/graphs.py`
 
 An example of creating sprinkler network
 
-```
+```python
 def get_sprinkler(seed=2000):
 
     rng = np.random.default_rng(seed)
