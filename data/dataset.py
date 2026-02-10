@@ -80,13 +80,16 @@ class MultiGraphICLSequenceDataset(IterableDataset):
 
         while True:
             # Determine target index for this batch (same for all batch elements)
-            if self.spec.target_index is not None:
-                # Fixed target index
-                t = int(self.spec.target_index)
-            else:
-                # Dynamic: randomly sample target index per batch
+            # Resample t until we get a node with at least one parent (k > 0)
+            while True:
                 t = int(self.rng.integers(0, N, dtype=np.int64))
-            
+                parents_idx = self.template.parent_idx[t]
+                k = int(parents_idx.size)
+                if k > 0 or k == 0:
+                    break
+                if all(self.template.parent_idx[i].size == 0 for i in range(N)):
+                    raise BNError("All nodes have k=0; cannot resample to k>0")
+
             # Determine context length for this batch (same for all batch elements)
             if self.spec.num_example is not None:
                 # Fixed context length
@@ -120,34 +123,27 @@ class MultiGraphICLSequenceDataset(IterableDataset):
             # Compute population CPT estimate from context examples (Bayesian estimation with known DAG structure)
             # This estimates P(X_t=1 | parent_config) from the context examples, not from ground truth CPT
             m = L - 1  # number of context examples
-            parents_idx = self.template.parent_idx[t]
-            k = int(parents_idx.size)
             K = 1 << k  # number of possible parent configurations
-            
+
             # Context examples for estimating CPT
             X_ctx = X_full[:, :m, :]  # (B, m, N)
             y_ctx = X_ctx[:, :, t].astype(np.int64)  # (B, m) - target values in context
-            
-            # Compute parent configurations for context examples and test token
-            if k == 0:
-                cfg_ctx = np.zeros((B, m), dtype=np.int64)
-                cfg_test = np.zeros((B,), dtype=np.int64)
-            else:
-                # Flatten context for parent config computation
-                X_ctx_flat = X_ctx.reshape(B * m, N)
-                parents_vals_ctx = X_ctx_flat[:, parents_idx].astype(np.int64)  # (B*m, k)
-                weights = (1 << np.arange(k, dtype=np.int64))[None, :]  # (1, k)
-                cfg_ctx = (parents_vals_ctx * weights).sum(axis=1).reshape(B, m)  # (B, m)
-                
-                # Test token parent configuration
-                test_prefix = X_full[:, L - 1, :]  # (B, N) - test token values
-                parents_vals_test = test_prefix[:, parents_idx].astype(np.int64)  # (B, k)
-                cfg_test = (parents_vals_test * weights).sum(axis=1)  # (B,)
+
+            # Compute parent configurations for context examples and test token (k > 0 guaranteed by resample loop)
+            X_ctx_flat = X_ctx.reshape(B * m, N)
+            parents_vals_ctx = X_ctx_flat[:, parents_idx].astype(np.int64)  # (B*m, k)
+            weights = (1 << np.arange(k, dtype=np.int64))[None, :]  # (1, k)
+            cfg_ctx = (parents_vals_ctx * weights).sum(axis=1).reshape(B, m)  # (B, m)
+
+            # Test token parent configuration
+            test_prefix = X_full[:, L - 1, :]  # (B, N) - test token values
+            parents_vals_test = test_prefix[:, parents_idx].astype(np.int64)  # (B, k)
+            cfg_test = (parents_vals_test * weights).sum(axis=1)  # (B,)
             
             # Estimate CPT from context examples using Beta prior (alpha=beta=0.0 = maximum likelihood)
             # For each batch element, estimate P(X_t=1 | cfg) from context counts
             y = np.empty((B,), dtype=np.float32)
-            alpha, beta = 0.0, 0.0  # Beta prior parameters (0.0 = no smoothing, use 0.5 for Laplace smoothing)
+            alpha, beta = 0.0, 0.0 # Beta prior parameters (0.0 = no smoothing, use 0.5 for Laplace smoothing)
             for i in range(B):
                 # Count occurrences of each parent configuration in context
                 tot = np.bincount(cfg_ctx[i], minlength=K).astype(np.float64)  # (K,)

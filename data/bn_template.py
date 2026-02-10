@@ -61,7 +61,7 @@ def init_graph_params_uniform(
     for parents in template.parent_idx:
         k = int(parents.size)
         K = 1 << k
-        p = 0.5 * rng.random(size=(G, K)).astype(np.float64)
+        p = 0.1 + 0.8 * rng.random(size=(G, K)).astype(np.float64)
         p1_list.append(p)
 
     return p1_list

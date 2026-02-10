@@ -14,7 +14,7 @@ class ICLLightningModule(pl.LightningModule):
         self,
         input_dim: int,
         init_lr: float = 3e-4,
-        weight_decay: float = 1e-2,
+        weight_decay: float = 0.0,
         max_steps: int = 100_000,
         warmup_steps: int = 1000,
         min_lr: float = 0.0,
@@ -37,10 +37,10 @@ class ICLLightningModule(pl.LightningModule):
         x = batch["x"]  # (B, L, D)
         y = batch["y"]  # (B,) - now probabilities in [0,1]
         logits = self(x)
-        
-        # Convert logits to probabilities and compute MSE loss (matching evaluation metric)
+
+        # Convert logits to probabilities and compute L1 loss (matching evaluation metric)
         p_hat = torch.sigmoid(logits)  # (B,)
-        loss = F.mse_loss(p_hat, y.float())
+        loss = F.l1_loss(p_hat, y.float())
 
         with torch.no_grad():
             # Compute TV distance as metric (matching evaluation metric)

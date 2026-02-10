@@ -23,6 +23,9 @@ from data import (
     get_chain,
     get_tree,
     get_general,
+    get_tree5,
+    get_chain5,
+    get_general5
 )
 from utils import evaluate_tv_over_context, ICLLightningModule, EvalSpec, evaluate_tv_over_context_with_baselines
 
@@ -132,6 +135,13 @@ def evaluate(args, model, run_dir):
     elif args.graph == "chain":
         bn = get_chain()
 
+    elif args.graph == "tree5":
+        bn = get_tree5()
+    elif args.graph == "chain5":
+        bn = get_chain5()
+    elif args.graph == "general5":
+        bn = get_general5()
+
     template = compile_template_from_structure(bn)
     # list of (test_size, 2^k)
 
@@ -148,7 +158,7 @@ def evaluate(args, model, run_dir):
         seed=123,
         output_csv=run_dir + "_eval_tv.csv",
         device="cuda",
-        infer_batch_size=512,
+        infer_batch_size=4,
     )
     # evaluate_tv_over_context(model, template, p1_list, spec)
     evaluate_tv_over_context_with_baselines(model, template, p1_list, spec)
@@ -301,6 +311,16 @@ def main():
     elif args.graph == "chain":
         bn = get_chain()
 
+    elif args.graph == "tree5":
+        bn = get_tree5()
+
+    elif args.graph == "general5":
+        bn = get_general5()
+
+    elif args.graph == "chain5":
+        bn = get_chain5()
+
+
     print("Compiling template...")
 
     template = compile_template_from_structure(bn)
@@ -312,14 +332,10 @@ def main():
     p1_list_train = init_graph_params_uniform(
         template, num_graphs=args.train_size, seed=args.seed
     )
-    # p1_list_test = init_graph_params_beta(
-    #     template, num_graphs=args.test_size, mode="easy", seed=args.seed + 1
-    # )
     print("Creating batch specification...")
     print("Using random target index sampling per batch (all target indices will be trained)")
-    # Determine if using fixed or dynamic context length
+
     if args.context_len is not None:
-        # Fixed context length
         print(f"Using fixed context length: {args.context_len}")
         spec = ICLBatchSpec(
             batch_graphs=args.batch_size,
@@ -329,7 +345,6 @@ def main():
             dtype=torch.long,
         )
     else:
-        # Dynamic context length (random per batch)
         print(f"Using dynamic context length: {args.min_context_len} to {args.max_context_len}")
         spec = ICLBatchSpec(
             batch_graphs=args.batch_size,
@@ -352,7 +367,7 @@ def main():
     train_loader = torch.utils.data.DataLoader(
         train_ds,
         batch_size=None,
-        num_workers=255,
+        num_workers=4,
         pin_memory=True,
     )
 
@@ -374,7 +389,7 @@ def main():
         n_embd=256,
         n_layer=12,
         n_head=8,
-        dropout=0.0,
+        dropout=0.1,
         max_seq_len=max_seq_len,
         disable_causal=True,   # best-effort patch
     )
@@ -394,6 +409,7 @@ def main():
         mode="min",
         save_top_k=1,
         filename="best",
+        save_last=False,  # Don't save last checkpoint, only best
     )
 
     print("Creating trainer...")
@@ -406,7 +422,7 @@ def main():
         accelerator="auto",
         devices="auto",
         logger=logger,
-        log_every_n_steps=1000,
+        log_every_n_steps=100,
         enable_checkpointing=True,
         default_root_dir=run_dir,
         gradient_clip_val=1.0,
@@ -415,7 +431,22 @@ def main():
 
     print("Training...")
     trainer.fit(lit, train_dataloaders=train_loader)
-    trained_model = lit.model  # this is your NonCausalGPT2BinaryHead
+    
+    # Load the best checkpoint (lowest training loss)
+    best_ckpt_path = ckpt_cb.best_model_path
+    if best_ckpt_path and os.path.exists(best_ckpt_path):
+        print(f"Loading best checkpoint from: {best_ckpt_path}")
+        # Load checkpoint using Lightning's load_from_checkpoint
+        # Parameters are loaded from checkpoint hyperparameters, but we can override if needed
+        lit_loaded = ICLLightningModule.load_from_checkpoint(
+            best_ckpt_path,
+            strict=False,  # Allow some flexibility if hyperparameters differ slightly
+        )
+        trained_model = lit_loaded.model
+    else:
+        print("Warning: No checkpoint found, using final model state")
+        trained_model = lit.model  # fallback to final model
+    
     trained_model.eval()
     
     print("Evaluating...")

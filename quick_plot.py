@@ -9,18 +9,16 @@ parser = argparse.ArgumentParser(
     description="Plot TV vs num_examples with std across seeds",
     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
 )
-parser.add_argument("--graph", type=str, default="tree", help="graph: tree, general, chain")
+parser.add_argument("--graph", type=str, default="tree5", help="graph: tree, general, chain")
 parser.add_argument("--num_examples", type=int, default=10)
 args = parser.parse_args()
 
-SEEDS = [1111]
-# 2222]
-# , 3333, 4444, 5555]
+SEEDS = [1111, 2222 , 3333, 4444, 5555]
 
 rows = []
 for seed in SEEDS:
     file_path = Path(
-        f"/home/dennis/JASACODE/runs/{args.graph}/seed_{seed}/{args.num_examples}/20000_eval_tv.csv"
+        f"/home/dennis/JASACODE/runs/{args.graph}/seed_{seed}/50to500/20000_eval_tv.csv"
     )
     df = pd.read_csv(file_path)
 
