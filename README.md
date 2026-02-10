@@ -33,7 +33,7 @@ python3 plot_loss.py --metrics_csv runs/tree5/seed_1234/50to500/20000/logs/versi
 
 - Training script with dynamic sequence length
 
-```python
+```bash
   python train.py \
     --batch-size 16 \
     --min-context-len 50 \
@@ -52,7 +52,7 @@ python3 plot_loss.py --metrics_csv runs/tree5/seed_1234/50to500/20000/logs/versi
 
 - Training script with fixed sequence length
 
-```python
+```bash
   python train.py \
     --batch-size 16 \
     --context-len 100 \
