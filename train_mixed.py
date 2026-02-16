@@ -2,7 +2,7 @@
 Training script for mixed graph structures.
 
 This script trains a transformer on data from multiple graph structures simultaneously.
-All structures use 5 nodes to maintain consistent input dimensions.
+All structures use 7 nodes to maintain consistent input dimensions.
 """
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from data import (
     compile_template_from_structure,
     init_graph_params_uniform,
     get_mixed_graph_structures,
+    get_mixed_graph_structures_5node,
     get_structure_names,
     MixedICLBatchSpec,
     MixedGraphICLSequenceDataset,
@@ -78,8 +79,15 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--target-index",
         type=int,
-        default=4,
-        help="Target node index (0-4 for 5-node graphs).",
+        default=6,
+        help="Target node index (0-6 for 7-node, 0-4 for 5-node).",
+    )
+    parser.add_argument(
+        "--num-nodes",
+        type=int,
+        default=7,
+        choices=[5, 7],
+        help="Number of nodes per graph structure (5 or 7).",
     )
 
     # Training
@@ -291,13 +299,143 @@ def plot_mixed_results(eval_dir, structure_names, output_path):
     print(f"✓ Comparison plot saved to: {comparison_path}")
 
 
+def plot_individual_structure(eval_dir, structure_name, output_path):
+    """
+    Generate detailed 2x2 plot for a single structure (like train.py).
+    Creates 4 subplots:
+    (1) Top left: Transformer with all target indices
+    (2) Top right: Average across all target indices with all 3 baselines
+    (3) Bottom left: Naive baseline with all target indices
+    (4) Bottom right: Bayesian baseline with all target indices
+    """
+    csv_path = os.path.join(eval_dir, f"eval_tv_{structure_name}.csv")
+    if not os.path.exists(csv_path):
+        print(f"Warning: CSV not found for {structure_name}: {csv_path}")
+        return
+    
+    df = pd.read_csv(csv_path)
+    
+    # Aggregate per (context_len, target_index) - already averaged across episodes
+    plot_df = (
+        df.groupby(["context_len", "target_index"], as_index=False)[
+            ["tv_model", "tv_naive", "tv_bayes"]
+        ]
+        .mean()
+        .rename(columns={"context_len": "num_examples"})
+    )
+    
+    # Get unique target indices for consistent colors
+    target_indices = sorted(plot_df["target_index"].unique())
+    n_targets = len(target_indices)
+    target_colors = plt.cm.tab10(range(n_targets))
+    
+    # Create 2x2 subplots
+    fig, axes = plt.subplots(
+        nrows=2, ncols=2,
+        figsize=(14, 10),
+        sharex=True, sharey=True
+    )
+    
+    # ===== (1) Top left: Transformer with all target indices =====
+    ax_tl = axes[0, 0]
+    for target_idx in target_indices:
+        target_data = plot_df[plot_df["target_index"] == target_idx].sort_values("num_examples")
+        ax_tl.plot(target_data["num_examples"], target_data["tv_model"], 
+                  marker="o", label=f"Target {target_idx}", 
+                  color=target_colors[target_indices.index(target_idx)], alpha=0.7)
+    
+    ax_tl.set_title("Transformer - All Target Indices")
+    ax_tl.set_xlabel("Number of Examples")
+    ax_tl.set_ylabel("TV Distance")
+    ax_tl.grid(True, alpha=0.3)
+    ax_tl.legend(bbox_to_anchor=(1.05, 1), loc="upper left", frameon=False, fontsize=8)
+    
+    # ===== (2) Top right: Average across all target indices with all baselines =====
+    ax_tr = axes[0, 1]
+    # Average across target_index for each method
+    avg_df = (
+        plot_df.groupby("num_examples", as_index=False)[
+            ["tv_model", "tv_naive", "tv_bayes"]
+        ]
+        .mean()
+    )
+    
+    # Convert to long format for seaborn
+    avg_long = avg_df.melt(
+        id_vars="num_examples",
+        value_vars=["tv_model", "tv_naive", "tv_bayes"],
+        var_name="method",
+        value_name="tv"
+    )
+    
+    method_map = {
+        "tv_model": "Transformer",
+        "tv_naive": "Naive",
+        "tv_bayes": "Bayes (known DAG)",
+    }
+    avg_long["method"] = avg_long["method"].map(method_map)
+    
+    sns.lineplot(
+        data=avg_long.sort_values("num_examples"),
+        x="num_examples",
+        y="tv",
+        hue="method",
+        marker="o",
+        ax=ax_tr
+    )
+    
+    ax_tr.set_title("Averaged Across All Target Indices")
+    ax_tr.set_xlabel("Number of Examples")
+    ax_tr.set_ylabel("TV Distance")
+    ax_tr.grid(True, alpha=0.3)
+    ax_tr.legend(bbox_to_anchor=(1.05, 1), loc="upper left", frameon=False)
+    
+    # ===== (3) Bottom left: Naive baseline with all target indices =====
+    ax_bl = axes[1, 0]
+    for target_idx in target_indices:
+        target_data = plot_df[plot_df["target_index"] == target_idx].sort_values("num_examples")
+        ax_bl.plot(target_data["num_examples"], target_data["tv_naive"], 
+                  marker="o", label=f"Target {target_idx}", 
+                  color=target_colors[target_indices.index(target_idx)], alpha=0.7)
+    
+    ax_bl.set_title("Naive Baseline - All Target Indices")
+    ax_bl.set_xlabel("Number of Examples")
+    ax_bl.set_ylabel("TV Distance")
+    ax_bl.grid(True, alpha=0.3)
+    ax_bl.legend(bbox_to_anchor=(1.05, 1), loc="upper left", frameon=False, fontsize=8)
+    
+    # ===== (4) Bottom right: Bayesian baseline with all target indices =====
+    ax_br = axes[1, 1]
+    for target_idx in target_indices:
+        target_data = plot_df[plot_df["target_index"] == target_idx].sort_values("num_examples")
+        ax_br.plot(target_data["num_examples"], target_data["tv_bayes"], 
+                  marker="o", label=f"Target {target_idx}", 
+                  color=target_colors[target_indices.index(target_idx)], alpha=0.7)
+    
+    ax_br.set_title("Bayesian Baseline - All Target Indices")
+    ax_br.set_xlabel("Number of Examples")
+    ax_br.set_ylabel("TV Distance")
+    ax_br.grid(True, alpha=0.3)
+    ax_br.legend(bbox_to_anchor=(1.05, 1), loc="upper left", frameon=False, fontsize=8)
+    
+    fig.suptitle(f"{structure_name.capitalize()} Structure - Detailed Evaluation", 
+                 fontsize=16, fontweight='bold')
+    fig.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"✓ Individual plot saved: {output_path}")
+
 
 def main():
     print("Getting arguments...")
     args = get_args()
 
-    print("Creating mixed graph structures (5 nodes each)...")
-    structures = get_mixed_graph_structures(seed=args.seed)
+    N = args.num_nodes
+    print(f"Creating mixed graph structures ({N} nodes each)...")
+    if N == 5:
+        structures = get_mixed_graph_structures_5node(seed=args.seed)
+    else:
+        structures = get_mixed_graph_structures(seed=args.seed)
     structure_names = get_structure_names()
     
     print(f"Structures: {structure_names}")
@@ -306,11 +444,11 @@ def main():
     print("Compiling templates...")
     templates = [compile_template_from_structure(bn) for bn in structures]
     
-    # Verify all have 5 nodes
+    # Verify node count
     for i, template in enumerate(templates):
         print(f"  {structure_names[i]}: {template.num_nodes} nodes, "
               f"topo order: {template.topo_nodes}")
-        assert template.num_nodes == 5, f"Structure {i} must have 5 nodes"
+        assert template.num_nodes == N, f"Structure {i} must have {N} nodes"
 
     pl.seed_everything(args.seed, workers=False)
 
@@ -370,7 +508,7 @@ def main():
         pin_memory=True,
     )
 
-    input_dim = 5 + 1  # 5 nodes + 1 target index feature
+    input_dim = N + 1  # N nodes + 1 target index feature
     
     # Determine max sequence length (context + 1 test token)
     if args.context_len is not None:
@@ -470,12 +608,19 @@ def main():
     plot_output_path = os.path.join(run_dir, "eval_mixed_results.png")
     plot_mixed_results(eval_dir, structure_names, plot_output_path)
     
+    # Generate individual 2x2 plots for each structure
+    print("\nGenerating individual 2x2 plots for each structure...")
+    for name in structure_names:
+        individual_plot_path = os.path.join(run_dir, f"eval_tv_plot_{name}.png")
+        plot_individual_structure(eval_dir, name, individual_plot_path)
+    
     print("\n" + "=" * 70)
     print("ALL DONE!")
     print("=" * 70)
     print(f"Checkpoint: {run_dir}")
     print(f"Evaluation: {eval_dir}")
-    print(f"Plots: {plot_output_path}")
+    print(f"Combined plots: {plot_output_path}")
+    print(f"Individual plots: {run_dir}/eval_tv_plot_*.png")
 
 
 if __name__ == "__main__":

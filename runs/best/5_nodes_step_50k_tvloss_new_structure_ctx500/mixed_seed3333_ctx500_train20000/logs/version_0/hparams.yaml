@@ -1,0 +1,13 @@
+disable_causal: true
+dropout: 0.1
+init_lr: 0.0003
+input_dim: 6
+loss_type: l1
+max_seq_len: 501
+max_steps: 50000
+min_lr: 1.0e-06
+n_embd: 256
+n_head: 8
+n_layer: 12
+warmup_steps: 2000
+weight_decay: 0.01

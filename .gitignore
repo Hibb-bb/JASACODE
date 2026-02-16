@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.ckpt
+*_eval/
+runs/*
+!runs/best/
+runs/best/*
+!runs/best/5_nodes_step_50k_tvloss_new_structure_ctx500/
+!runs/best/7_nodes_step_50k_tvloss_new_structure_ctx500/
+outputs_mixed/
+eval_results/
+slurm_log/
+test_phase3/
+.venv/

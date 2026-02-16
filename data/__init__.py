@@ -7,7 +7,11 @@ from .mixed_graphs import (
     get_tree_5node, 
     get_chain_5node, 
     get_general_5node,
+    get_tree_7node, 
+    get_chain_7node, 
+    get_general_7node,
     get_mixed_graph_structures,
+    get_mixed_graph_structures_5node,
     get_structure_names
 )
 from .mixed_dataset import MixedICLBatchSpec, MixedGraphICLSequenceDataset
@@ -26,10 +30,15 @@ __all__ = [
     "get_tree",
     "get_chain",
     "get_general",
-    # Mixed graph structures
+    # Mixed graph structures (5-node)
     "get_tree_5node",
     "get_chain_5node",
     "get_general_5node",
+    "get_mixed_graph_structures_5node",
+    # Mixed graph structures (7-node)
+    "get_tree_7node",
+    "get_chain_7node",
+    "get_general_7node",
     "get_mixed_graph_structures",
     "get_structure_names",
     "MixedICLBatchSpec",
