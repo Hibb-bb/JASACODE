@@ -7,6 +7,7 @@ runs/*
 runs/best/*
 !runs/best/5_nodes_step_50k_tvloss_new_structure_ctx500/
 !runs/best/7_nodes_step_50k_tvloss_new_structure_ctx500/
+!runs/best/random_dag_5nodes_p0.1to0.8_ctx500/
 outputs_mixed/
 eval_results/
 slurm_log/

@@ -15,6 +15,8 @@ from .mixed_graphs import (
     get_structure_names
 )
 from .mixed_dataset import MixedICLBatchSpec, MixedGraphICLSequenceDataset
+from .random_dag import sample_random_dag
+from .random_dag_dataset import RandomDAGBatchSpec, RandomDAGICLDataset
 
 
 __all__ = [
@@ -43,4 +45,8 @@ __all__ = [
     "get_structure_names",
     "MixedICLBatchSpec",
     "MixedGraphICLSequenceDataset",
+    # Random DAG
+    "sample_random_dag",
+    "RandomDAGBatchSpec",
+    "RandomDAGICLDataset",
 ]

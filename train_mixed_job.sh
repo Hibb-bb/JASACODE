@@ -79,6 +79,11 @@ for structure in tree chain general; do
     --train-size 20000
 done
 
+echo "Plotting aggregated training loss..."
+python plot_training_loss_agg.py \
+  --output-dir $OUTPUT_DIR \
+  --title "Mixed Graph — 7 Nodes — Training Loss"
+
 echo ""
 echo "=========================================="
 echo "All mixed graph training completed!"

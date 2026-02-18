@@ -270,14 +270,14 @@ def get_general_7node(seed=2000):
 
     A   B          (roots, 0 parents)
     |\ /
-    | C------+     (parents: A, B)
-    | / \    |
-    D    |   |     (parents: A, C)
-    |\   |   |
-    E \  |   |     (parents: D)          <-- same as 5-node!
-    |\ \ |   |
-    | F  |   |     (parents: D, E)
-    |     \ /
+    |  C------ (parents: A, B)
+    | / \    
+    D    \          (parents: A, C)
+    |\    \    
+    E \    |        (parents: D)          <-- same as 5-node!
+    |\ \   |   
+    |  F   |        (parents: D, E)
+    |      |
     +------G       (parents: C, E)
 
     Preserved 5-node edges:  A->C, B->C, A->D, C->D, D->E
