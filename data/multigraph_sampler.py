@@ -6,6 +6,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from .bn_template import BNTemplate
+from .categorical_template import CategoricalTemplate
 from .binary_bn import BNError
 
 
@@ -73,6 +74,59 @@ def sample_many_graphs(
         p = np.take_along_axis(p1, cfg, axis=1)  # (T, E)
         u = rng.random((T, E))
         X[:, :, i] = (u < p).astype(np.uint8)
+
+    return X
+
+
+def _parent_config_from_X_categorical(
+    X: np.ndarray, parent_idx: np.ndarray, K: int
+) -> np.ndarray:
+    """
+    X: (T, E, N) values in {0, 1, ..., K-1}
+    parent_idx: (k,) indices into N
+    K: cardinality
+    returns cfg: (T, E) int64 in [0, K^k)
+    """
+    k = int(parent_idx.size)
+    if k == 0:
+        return np.zeros((X.shape[0], X.shape[1]), dtype=np.int64)
+    pv = X[:, :, parent_idx].astype(np.int64)  # (T, E, k)
+    powers = np.power(K, np.arange(k, dtype=np.int64))  # (k,)
+    return (pv * powers[None, None, :]).sum(axis=2)  # (T, E)
+
+
+def sample_many_graphs_categorical(
+    template: CategoricalTemplate,
+    cpt_list: List[np.ndarray],  # each (G, K^k_i, K)
+    graph_ids: np.ndarray,
+    num_examples: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """
+    Vectorized ancestral sampling for T selected graphs (3-class BN).
+
+    Returns:
+        X: (T, E, N) int64 in {0, 1, 2}, same layout as binary version.
+    """
+    graph_ids = np.asarray(graph_ids, dtype=np.int64).reshape(-1)
+    T = int(graph_ids.shape[0])
+    E = int(num_examples)
+    N = template.num_nodes
+    K = template.cardinality
+
+    X = np.empty((T, E, N), dtype=np.int64)
+
+    for i, parents in enumerate(template.parent_idx):
+        cfg = _parent_config_from_X_categorical(X, parents, K)  # (T, E)
+        cpt = cpt_list[i]  # (G, num_configs, K)
+        # For each (t, e): sample from cpt[graph_ids[t], cfg[t,e], :]
+        probs = cpt[graph_ids[:, np.newaxis], cfg, :]  # (T, E, K)
+        u = rng.random((T, E))
+        # Categorical sampling: cumsum and find first where u < cumsum
+        cum = np.cumsum(probs, axis=2)  # (T, E, K)
+        # u (T,E) vs cum (T,E,K) -> compare and argmax first True
+        ge = u[:, :, None] < cum  # (T, E, K)
+        X[:, :, i] = np.argmax(ge, axis=2).astype(np.int64)
 
     return X
 

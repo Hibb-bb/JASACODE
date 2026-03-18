@@ -3,26 +3,54 @@ from pathlib import Path
 
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
+import numpy as np
+
 
 parser = argparse.ArgumentParser(
-    description="Plot TV vs num_examples with std across seeds",
+    description="Plot TV vs num_examples (same 2x2 format as train.py plot_results, with std across seeds)",
     formatter_class=argparse.ArgumentDefaultsHelpFormatter,
 )
-parser.add_argument("--graph", type=str, default="tree5", help="graph: tree, general, chain")
-parser.add_argument("--num_examples", type=int, default=10)
+parser.add_argument("--graph", type=str, default="tree", help="graph: tree, general, chain")
+parser.add_argument("--context", type=str, default="500", help="context folder e.g. 100to500, 50to500")
+parser.add_argument("--train-size", type=str, default="20000", help="train size folder e.g. 20000")
+parser.add_argument("--num-layers", type=int, default=12, help="Number of transformer layers (for run subfolder L<num_layers>).")
 args = parser.parse_args()
 
-SEEDS = [1111, 2222 , 3333, 4444, 5555]
+
+
+font_size = 20
+
+plt.rcParams.update({
+    'font.size': font_size,
+    'axes.titlesize': font_size,
+    'axes.labelsize': font_size,
+    'xtick.labelsize': font_size - 4,
+    'ytick.labelsize': font_size - 4,
+    'font.family': 'sans-serif',
+    'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
+})
+
+# plt.gca().set_aspect('equal')
+
+
+SEEDS = [1111, 2222, 3333, 4444, 5555]
 
 rows = []
 for seed in SEEDS:
-    file_path = Path(
-        f"/home/dennis/JASACODE/runs/{args.graph}/seed_{seed}/50to500/20000_eval_tv.csv"
-    )
+    base_dir = Path("/home/dennis/JASACODE/runs") / args.graph / f"seed_{seed}" / args.context
+    # New-style path with L<num_layers> subfolder
+    new_path = base_dir / f"L{args.num_layers}" / f"{args.train_size}_eval_tv.csv"
+    # Backwards-compatible fallback to old path without L<num_layers>
+    old_path = base_dir / f"{args.train_size}_eval_tv.csv"
+    if new_path.exists():
+        file_path = new_path
+    else:
+        file_path = old_path
+    if not file_path.exists():
+        print(f"WARNING: {file_path} not found, skipping seed {seed}")
+        continue
     df = pd.read_csv(file_path)
-
-    # Aggregate per (context_len, target_index) for THIS seed
+    # Aggregate per (context_len, target_index) for this seed (mean over episodes)
     seed_vals = (
         df.groupby(["context_len", "target_index"], as_index=False)[
             ["tv_model", "tv_naive", "tv_bayes"]
@@ -33,107 +61,118 @@ for seed in SEEDS:
     seed_vals["seed"] = seed
     rows.append(seed_vals)
 
-plot_df = pd.concat(rows, ignore_index=True)
+if not rows:
+    raise FileNotFoundError(f"No CSV files found for graph={args.graph}, context={args.context}")
 
-# Convert to long format: one row per (num_examples, target, seed, method)
-plot_df = plot_df.melt(
-    id_vars=["num_examples", "target_index", "seed"],
-    value_vars=["tv_model", "tv_naive", "tv_bayes"],
-    var_name="method",
-    value_name="tv",
-)
+wide_df = pd.concat(rows, ignore_index=True)
 
-# Optional: nicer labels
-method_map = {
-    "tv_model": "Transformer",
-    "tv_naive": "Naive",
-    "tv_bayes": "Bayes (known DAG)",
-}
-plot_df["method"] = plot_df["method"].map(method_map)
-
-
-# ---------- sanity checks (optional but recommended) ----------
-# Check how many seeds contributed to each (num_examples, target_index)
-counts = (
-    plot_df.groupby(["num_examples", "target_index"])["seed"]
-           .nunique()
-           .reset_index(name="n_seeds")
-)
-bad = counts[counts["n_seeds"] != len(SEEDS)]
-if not bad.empty:
-    print("WARNING: some (num_examples, target_index) groups do not have all seeds:")
-    print(bad.sort_values(["target_index", "num_examples"]).to_string(index=False))
-
-# If you want to see the actual 5 values for a given group:
-# print(plot_df[(plot_df["target_index"]==0) & (plot_df["num_examples"]==10)].sort_values("seed"))
-# -------------------------------------------------------------
-
-# Create 2 subplots side by side
-fig, axes = plt.subplots(
-    nrows=1, ncols=2,
-    figsize=(14, 5),
-    sharex=True, sharey=True
-)
-
-# ===== Left plot: All target indices together (same format as before) =====
-ax_left = axes[0]
-# First aggregate per (num_examples, target_index, method) across seeds
-left_agg = (
-    plot_df.groupby(["num_examples", "target_index", "method"], as_index=False)["tv"]
+# Aggregate across seeds: mean and std per (num_examples, target_index) for each method
+agg = (
+    wide_df.groupby(["num_examples", "target_index"])[["tv_model", "tv_naive", "tv_bayes"]]
     .agg(["mean", "std"])
     .reset_index()
 )
-left_agg.columns = ["num_examples", "target_index", "method", "tv_mean", "tv_std"]
+# Flatten column MultiIndex: (tv_model, mean) -> tv_model_mean; keep (name, '') as name
+def _flatten_col(c):
+    if isinstance(c, tuple):
+        return f"{c[0]}_{c[1]}" if c[1] else c[0]
+    return c
+agg.columns = [_flatten_col(c) for c in agg.columns]
 
-# Get unique methods for consistent colors
-methods = sorted(left_agg["method"].unique())
-colors = plt.cm.tab10(range(len(methods)))
-
-# Plot all target indices, grouped by method (same format - methods as colors)
-# Plot each target_index separately but use method colors
-for method_idx, method in enumerate(methods):
-    method_data = left_agg[left_agg["method"] == method].sort_values(["target_index", "num_examples"])
-    first_target = True
-    for target_idx in sorted(method_data["target_index"].unique()):
-        target_data = method_data[method_data["target_index"] == target_idx].sort_values("num_examples")
-        # Only label the first target_index for each method to avoid duplicate legend entries
-        label = method if first_target else ""
-        ax_left.plot(target_data["num_examples"], target_data["tv_mean"], 
-                    marker="o", label=label, color=colors[method_idx], alpha=0.6)
-        first_target = False
-
-ax_left.set_title("All Target Indices")
-ax_left.set_xlabel("Number of Examples")
-ax_left.set_ylabel("TV Distance")
-ax_left.grid(True, alpha=0.3)
-ax_left.legend(bbox_to_anchor=(1.05, 1), loc="upper left", frameon=False)
-
-# ===== Right plot: Average across all target indices =====
-ax_right = axes[1]
-# Average across target_index first (keeping method and num_examples)
-avg_df = (
-    plot_df.groupby(["num_examples", "method", "seed"], as_index=False)["tv"]
+# For top-right: average across target_index first (per seed), then mean ± std across seeds
+avg_per_seed = (
+    wide_df.groupby(["num_examples", "seed"], as_index=False)[["tv_model", "tv_naive", "tv_bayes"]]
     .mean()
 )
-
-sns.lineplot(
-    data=avg_df.sort_values("num_examples"),
-    x="num_examples",
-    y="tv",
-    hue="method",
-    estimator="mean",   # mean across seeds
-    errorbar="sd",      # std across seeds
-    marker="o",
-    ax=ax_right
+avg_agg = (
+    avg_per_seed.groupby("num_examples")[["tv_model", "tv_naive", "tv_bayes"]]
+    .agg(["mean", "std"])
+    .reset_index()
 )
+avg_agg.columns = [_flatten_col(c) for c in avg_agg.columns]
 
-ax_right.set_title("Averaged Across All Target Indices")
-ax_right.set_xlabel("Number of Examples")
-ax_right.set_ylabel("TV Distance")
-ax_right.grid(True, alpha=0.3)
-ax_right.legend(bbox_to_anchor=(1.05, 1), loc="upper left", frameon=False)
+# Same layout as train.py plot_results: 2x2
+target_indices = sorted(agg["target_index"].unique())
+n_targets = len(target_indices)
+target_colors = plt.cm.tab10(np.arange(n_targets))
 
-fig.tight_layout()
-out_path = f"/home/dennis/JASACODE/runs/{args.graph}/num_examples_{args.num_examples}_tv.png"
-plt.savefig(out_path, dpi=640)
+fig, axes = plt.subplots(
+    nrows=2, ncols=2,
+    figsize=(10, 9),
+    sharex=True, sharey=True
+)
+      # or ax.set_aspect(1)
+
+def plot_panel(ax, agg_df, value_mean_col, value_std_col, title, show_legend=True):
+    """Plot one panel: one line per target_index with error bars (std)."""
+    for i, target_idx in enumerate(target_indices):
+        sub = agg_df[agg_df["target_index"] == target_idx].sort_values("num_examples")
+        x = sub["num_examples"].values
+        y = sub[value_mean_col].values
+        yerr = sub[value_std_col].values
+        # NaN std (e.g. single seed) -> no error bar
+        if np.any(np.isnan(yerr)):
+            yerr = None
+        ax.errorbar(
+            x, y, yerr=yerr,
+            marker="o", label=f"Node {target_idx}" if show_legend else None,
+            color=target_colors[i], alpha=0.7,
+            capsize=3, capthick=1
+        )
+    ax.set_title(title)
+    ax.set_xlabel("Number of Examples")
+    ax.set_ylabel("TV Distance")
+    ax.grid(True, alpha=0.3)
+    if show_legend:
+        ax.legend(fontsize=14, loc="upper right")
+        # ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", frameon=False, fontsize=8)
+
+# (1) Top left: Transformer - all target indices (only panel with target index legend)
+plot_panel(axes[0, 0], agg, "tv_model_mean", "tv_model_std", "Transformer", show_legend=True)
+axes[0, 0].set_xlabel("")
+
+# (2) Top right: Average across all target indices with all 3 baselines (with std)
+ax_tr = axes[0, 1]
+for col, label in [
+    ("tv_model", "Transformer"),
+    ("tv_naive", "Naive"),
+    ("tv_bayes", "Bayes"),
+]:
+    sub = avg_agg.sort_values("num_examples")
+    x = sub["num_examples"].values
+    y = sub[f"{col}_mean"].values
+    yerr = sub[f"{col}_std"].values
+    if np.any(np.isnan(yerr)):
+        yerr = None
+    ax_tr.errorbar(x, y, yerr=yerr, marker="o", label=label, capsize=3, capthick=1)
+ax_tr.set_title("Averaged Across Nodes")
+ax_tr.set_xlabel("")
+ax_tr.set_ylabel("")
+ax_tr.grid(True, alpha=0.3)
+ax_tr.legend(fontsize=14, loc="upper right")
+
+# ax_tr.legend(bbox_to_anchor=(1.05, 1), loc="upper left", frameon=False)
+
+# (3) Bottom left: Naive baseline - all target indices (no duplicate target legend)
+plot_panel(axes[1, 0], agg, "tv_naive_mean", "tv_naive_std", "Naive Inference", show_legend=False)
+
+# (4) Bottom right: Bayesian baseline - all target indices (no duplicate target legend)
+plot_panel(axes[1, 1], agg, "tv_bayes_mean", "tv_bayes_std", "Bayesian", show_legend=False)
+axes[1, 1].set_ylabel("")
+
+# Panel labels (a), (b), (c), (d)
+for ax, label in zip(axes.flat, ["(a)", "(b)", "(c)", "(d)"]):
+    ax.text(0.02, 0.98, label, transform=ax.transAxes, fontsize=font_size, fontweight="bold", va="top", ha="left")
+
+# Overall title (slightly larger font)
+title_str = f"{args.graph}".upper()
+title_str = args.graph.replace("_", " ").title()
+fig.suptitle(title_str, fontsize=font_size + 6, y=0.90)
+fig.tight_layout(rect=[0, 0, 1, 0.96])
+out_path = Path(f"/home/dennis/JASACODE/imgs/{args.graph}_final.png")
+out_path.parent.mkdir(parents=True, exist_ok=True)
+plt.savefig(out_path, dpi=600, bbox_inches="tight")
+plt.close()
 print(f"Saved: {out_path}")
+
+

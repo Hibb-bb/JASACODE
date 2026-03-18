@@ -16,19 +16,18 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from data import (
-    compile_template_from_structure,
-    init_graph_params_uniform,
+    get_sachs_categorical,
+    compile_template_from_categorical,
+    init_graph_params_categorical,
     ICLBatchSpec,
-    MultiGraphICLSequenceDataset,
-    get_chain,
-    get_tree,
-    get_general,
-    get_tree5,
-    get_chain5,
-    get_general5,
-    get_general7
+    MultiGraphICLSequenceDatasetCategorical,
+    CategoricalTemplate,
 )
-from utils import evaluate_tv_over_context, ICLLightningModule, EvalSpec, evaluate_tv_over_context_with_baselines
+from utils import (
+    ICLLightningModuleCategorical,
+    EvalSpec,
+    evaluate_tv_over_context_categorical_with_baselines,
+)
 
 
 def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -47,7 +46,7 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--context-len",
         type=int,
-        default=None,
+        default=500,
         help="Fixed number of context examples per sequence. If None, use --min-context-len and --max-context-len for dynamic sampling.",
     )
     parser.add_argument(
@@ -65,9 +64,9 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--graph",
         type=str,
-        default="tree",
-        help="Graph structure name (e.g. tree, chain, collider).",
+        default="sachs"
     )
+
     parser.add_argument(
         "--train-size",
         type=int,
@@ -113,6 +112,20 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="Number of transformer layers.",
     )
 
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default="32-true",
+        choices=["32-true", "16-mixed", "bf16-mixed"],
+        help="Lightning precision setting. Use bf16-mixed (recommended on A100/H100) or 16-mixed to reduce memory.",
+    )
+    parser.add_argument(
+        "--accumulate-grad-batches",
+        type=int,
+        default=1,
+        help="Accumulate gradients over this many batches to simulate a larger batch size with lower memory.",
+    )
+
     # Output / misc
     parser.add_argument(
         "--output-dir",
@@ -123,7 +136,7 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--seed",
         type=int,
-        default=0,
+        default=42,
         help="Random seed.",
     )
 
@@ -132,43 +145,24 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 
 def evaluate(args, model, run_dir):
-
-    if args.graph == "tree":
-        bn = get_tree()
-
-    elif args.graph == "general":
-        bn = get_general()
-
-    elif args.graph == "chain":
-        bn = get_chain()
-
-    elif args.graph == "tree5":
-        bn = get_tree5()
-    elif args.graph == "chain5":
-        bn = get_chain5()
-    elif args.graph == "general5":
-        bn = get_general5()
-
-    template = compile_template_from_structure(bn)
-    # list of (test_size, 2^k)
-
-    param_rng = np.random.default_rng(args.seed + 1000)  # Different seed for test graphs
-
-    p1_list = init_graph_params_uniform(
+    """Evaluate on 3-class Sachs: fixed test graphs and categorical TV."""
+    bn = get_sachs_categorical(seed=args.seed + 999)
+    template = compile_template_from_categorical(bn)
+    param_rng = np.random.default_rng(args.seed + 1000)
+    cpt_list = init_graph_params_categorical(
         template, num_graphs=args.test_size, seed=param_rng
     )
-
-    # 4) evaluate
     spec = EvalSpec(
-        context_lens=[1, 2, 5, 10, 20, 50, 100, 200,  300, 400, 500],
+        context_lens=[1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500],
         num_episodes=args.test_size,
         seed=123,
         output_csv=run_dir + "_eval_tv.csv",
         device="cuda",
         infer_batch_size=4,
     )
-    # evaluate_tv_over_context(model, template, p1_list, spec)
-    evaluate_tv_over_context_with_baselines(model, template, p1_list, spec)
+    evaluate_tv_over_context_categorical_with_baselines(
+        model, template, cpt_list, spec
+    )
 
 
 def plot_results(args, eval_csv_path, output_path):
@@ -311,36 +305,15 @@ def main():
 
     print(f"Using {args.num_layers} transformer layers")
 
-    if args.graph == "tree":
-        bn = get_tree()
 
-    elif args.graph == "general":
-        bn = get_general()
-
-    elif args.graph == "chain":
-        bn = get_chain()
-
-    elif args.graph == "tree5":
-        bn = get_tree5()
-
-    elif args.graph == "general5":
-        bn = get_general()
-
-    elif args.graph == "chain5":
-        bn = get_chain5()
-
-    elif args.graph == "general7":
-        bn = get_general7()
-
+    bn = get_sachs_categorical(seed=args.seed)
     print("Compiling template...")
-
-    template = compile_template_from_structure(bn)
+    template = compile_template_from_categorical(bn)
 
     pl.seed_everything(args.seed, workers=False)
 
-    print("Initializing graph parameters...")
-
-    p1_list_train = init_graph_params_uniform(
+    print("Initializing graph parameters (3-class Sachs)...")
+    cpt_list_train = init_graph_params_categorical(
         template, num_graphs=args.train_size, seed=args.seed
     )
     print("Creating batch specification...")
@@ -367,10 +340,10 @@ def main():
             dtype=torch.long,
         )
 
-    print("Creating training dataset...")
-    train_ds = MultiGraphICLSequenceDataset(
+    print("Creating training dataset (categorical)...")
+    train_ds = MultiGraphICLSequenceDatasetCategorical(
         template=template,
-        p1_list=p1_list_train,
+        cpt_list=cpt_list_train,
         seed=args.seed,
         spec=spec,
     )
@@ -391,8 +364,9 @@ def main():
     # Add some buffer for safety
     max_seq_len = max(max_seq_len, 500 + 1)
     
-    lit = ICLLightningModule(
+    lit = ICLLightningModuleCategorical(
         input_dim=input_dim,
+        num_classes=template.cardinality,
         init_lr=args.init_lr,
         max_steps=args.train_step,
         warmup_steps=args.warmup_steps,
@@ -402,7 +376,7 @@ def main():
         n_head=8,
         dropout=0.1,
         max_seq_len=max_seq_len,
-        disable_causal=True,   # best-effort patch
+        disable_causal=True,
     )
 
     # ---- Logging + Trainer
@@ -441,11 +415,12 @@ def main():
         devices="auto",
         strategy="ddp_find_unused_parameters_true",
         logger=logger,
-        log_every_n_steps=100,
+        log_every_n_steps=1000,
         enable_checkpointing=True,
         default_root_dir=run_dir,
         gradient_clip_val=1.0,
-        # precision="32-true",
+        precision=args.precision,
+        accumulate_grad_batches=args.accumulate_grad_batches,
     )
 
     print("Training...")
@@ -459,7 +434,7 @@ def main():
             print(f"Loading best checkpoint from: {best_ckpt_path}")
             # Load checkpoint using Lightning's load_from_checkpoint
             # Parameters are loaded from checkpoint hyperparameters, but we can override if needed
-            lit_loaded = ICLLightningModule.load_from_checkpoint(
+            lit_loaded = ICLLightningModuleCategorical.load_from_checkpoint(
                 best_ckpt_path,
                 strict=False,  # Allow some flexibility if hyperparameters differ slightly
             )

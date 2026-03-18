@@ -113,3 +113,6 @@ Next, modify `train.py` so it imports `get_sprinkler` from `data/graphs.py`.
 
 # salloc -p debug -t 02:00:00
 ```
+
+
+```uv run python train_sachs.py --train-step 50000 --batch-size 16 --context-len 200```

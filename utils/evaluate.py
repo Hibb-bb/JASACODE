@@ -9,7 +9,8 @@ import numpy as np
 import torch
 
 from data.bn_template import BNTemplate
-from data.multigraph_sampler import sample_many_graphs
+from data.categorical_template import CategoricalTemplate
+from data.multigraph_sampler import sample_many_graphs, sample_many_graphs_categorical
 from data.binary_bn import BNError
 
 
@@ -143,6 +144,183 @@ def _bayes_cpt_from_context(
         cfg = int(cfg_test[i])
         p_hat[i] = (alpha + one[cfg]) / (alpha + beta + tot[cfg])
     return p_hat
+
+
+def _compute_parent_cfg_categorical(
+    test_prefix: np.ndarray,
+    parent_idx: np.ndarray,
+    K: int,
+) -> np.ndarray:
+    """Parent config id = sum parent_val[j] * K^j. Returns (B,) int64."""
+    k = int(parent_idx.size)
+    if k == 0:
+        return np.zeros((test_prefix.shape[0],), dtype=np.int64)
+    pv = test_prefix[:, parent_idx].astype(np.int64)
+    powers = np.power(K, np.arange(k, dtype=np.int64))
+    return (pv * powers[None, :]).sum(axis=1)
+
+
+def _naive_marginal_from_context_categorical(
+    X_full: np.ndarray,
+    target_index: int,
+    K: int,
+    *,
+    alpha: float = 0.5,
+) -> np.ndarray:
+    """Naive baseline: P(X_t=v) from context counts + Dirichlet(alpha). Returns (B, K)."""
+    B, L, N = X_full.shape
+    m = L - 1
+    t = int(target_index)
+    y_ctx = X_full[:, :m, t].astype(np.int64)
+    counts = np.zeros((B, K), dtype=np.float64)
+    for v in range(K):
+        counts[:, v] = (y_ctx == v).sum(axis=1)
+    return (alpha + counts) / (alpha * K + m)
+
+
+def _bayes_cpt_from_context_categorical(
+    X_full: np.ndarray,
+    template: CategoricalTemplate,
+    target_index: int,
+    *,
+    alpha: float = 0.5,
+) -> np.ndarray:
+    """Bayesian CPT from context; return distribution at test parent config. (B, K)."""
+    B, L, N = X_full.shape
+    m = L - 1
+    t = int(target_index)
+    K = template.cardinality
+    parents_idx = template.parent_idx[t]
+    k = int(parents_idx.size)
+    num_configs = K ** k
+
+    X_ctx = X_full[:, :m, :]
+    y_ctx = X_ctx[:, :, t].astype(np.int64)
+    X_ctx_flat = X_ctx.reshape(B * m, N)
+    cfg_ctx = _compute_parent_cfg_categorical(
+        X_ctx_flat, parents_idx, K
+    ).reshape(B, m)
+    cfg_test = _compute_parent_cfg_categorical(X_full[:, L - 1, :], parents_idx, K)
+
+    out = np.empty((B, K), dtype=np.float64)
+    for i in range(B):
+        tot = np.bincount(cfg_ctx[i], minlength=num_configs).astype(np.float64)
+        counts = np.zeros((num_configs, K), dtype=np.float64)
+        for v in range(K):
+            counts[:, v] = np.bincount(
+                cfg_ctx[i],
+                weights=(y_ctx[i] == v).astype(np.float64),
+                minlength=num_configs,
+            )
+        cfg = int(cfg_test[i])
+        if tot[cfg] > 0:
+            out[i] = (alpha + counts[cfg, :]) / (alpha * K + tot[cfg])
+        else:
+            out[i] = (alpha + counts.sum(axis=0)) / (alpha * K + counts.sum())
+    return out
+
+
+def _tv_categorical(p: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """TV between distributions: 0.5 * sum_i |p_i - q_i|. p, q (B, K); returns (B,)."""
+    return 0.5 * np.abs(p - q).sum(axis=1)
+
+
+def evaluate_tv_over_context_categorical_with_baselines(
+    model: torch.nn.Module,
+    template: CategoricalTemplate,
+    cpt_list_fixed: List[np.ndarray],
+    spec: EvalSpec,
+    *,
+    naive_alpha: float = 0.5,
+    bayes_alpha: float = 0.5,
+) -> None:
+    """
+    Evaluate 3-class Sachs (or any categorical BN). TV = 0.5 * sum_c |p_c - q_c|.
+    Writes CSV with tv_model, tv_naive, tv_bayes per episode.
+    """
+    N = template.num_nodes
+    K = template.cardinality
+    if len(cpt_list_fixed) != N:
+        raise BNError("cpt_list_fixed length must match template.num_nodes")
+    num_graphs = cpt_list_fixed[0].shape[0]
+    for i, parents in enumerate(template.parent_idx):
+        k = int(parents.size)
+        ncfg = K ** k
+        if cpt_list_fixed[i].shape != (num_graphs, ncfg, K):
+            raise BNError(
+                f"cpt_list_fixed[{i}] shape expected ({num_graphs},{ncfg},{K}), got {cpt_list_fixed[i].shape}"
+            )
+
+    rng = np.random.default_rng(spec.seed)
+    device = torch.device(spec.device)
+    model = model.to(device)
+    model.eval()
+
+    out_path = Path(spec.output_csv)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "context_len", "target_index", "episode",
+        "y_test", "parents_cfg",
+        "tv_model", "tv_naive", "tv_bayes",
+    ]
+    with out_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for m in spec.context_lens:
+            L = int(m) + 1
+            remaining = int(spec.num_episodes)
+            episode_offset = 0
+
+            while remaining > 0:
+                B = min(remaining, spec.infer_batch_size)
+                graph_ids = rng.integers(0, num_graphs, size=B, dtype=np.int64)
+                X_full = sample_many_graphs_categorical(
+                    template=template,
+                    cpt_list=cpt_list_fixed,
+                    graph_ids=graph_ids,
+                    num_examples=L,
+                    rng=rng,
+                )
+
+                for t in range(N):
+                    y_test = X_full[:, L - 1, t].astype(np.int64)
+                    test_prefix = X_full[:, L - 1, :]
+                    parents_idx = template.parent_idx[t]
+                    cfg = _compute_parent_cfg_categorical(test_prefix, parents_idx, K)
+                    p_true = cpt_list_fixed[t][graph_ids, cfg, :].astype(np.float64)
+
+                    X_out = _build_icl_x(X_full, target_index=t)
+                    x_tensor = torch.as_tensor(X_out, dtype=torch.float32, device=device)
+                    with torch.no_grad():
+                        logits = model(x_tensor)
+                        p_hat_model = torch.softmax(logits, dim=1).detach().cpu().numpy().astype(np.float64)
+
+                    p_hat_naive = _naive_marginal_from_context_categorical(
+                        X_full, t, K, alpha=naive_alpha
+                    )
+                    p_hat_bayes = _bayes_cpt_from_context_categorical(
+                        X_full, template, t, alpha=bayes_alpha
+                    )
+
+                    tv_model = _tv_categorical(p_hat_model, p_true)
+                    tv_naive = _tv_categorical(p_hat_naive, p_true)
+                    tv_bayes = _tv_categorical(p_hat_bayes, p_true)
+
+                    for bi in range(B):
+                        writer.writerow({
+                            "context_len": int(m),
+                            "target_index": int(t),
+                            "episode": int(episode_offset + bi),
+                            "y_test": int(y_test[bi]),
+                            "parents_cfg": int(cfg[bi]),
+                            "tv_model": float(tv_model[bi]),
+                            "tv_naive": float(tv_naive[bi]),
+                            "tv_bayes": float(tv_bayes[bi]),
+                        })
+
+                episode_offset += B
+                remaining -= B
 
 
 def evaluate_tv_over_context_with_baselines(

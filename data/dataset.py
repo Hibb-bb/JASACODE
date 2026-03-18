@@ -7,8 +7,9 @@ import numpy as np
 import torch
 from torch.utils.data import IterableDataset
 
-from .multigraph_sampler import sample_many_graphs
+from .multigraph_sampler import sample_many_graphs, sample_many_graphs_categorical
 from .bn_template import BNTemplate
+from .categorical_template import CategoricalTemplate
 from .binary_bn import BNError
 
 
@@ -180,4 +181,125 @@ class MultiGraphICLSequenceDataset(IterableDataset):
             if self.return_full:
                 batch["full"] = torch.as_tensor(X_full.astype(np.int64), dtype=dtype, device=device)  # (B, L, N)
 
+            yield batch
+
+
+def _parent_config_categorical(
+    X_flat: np.ndarray, parent_idx: np.ndarray, K: int
+) -> np.ndarray:
+    """Parent config id = sum parent_val[j] * K^j. X_flat (R, N), returns (R,) int64."""
+    k = int(parent_idx.size)
+    if k == 0:
+        return np.zeros((X_flat.shape[0],), dtype=np.int64)
+    pv = X_flat[:, parent_idx].astype(np.int64)
+    powers = np.power(K, np.arange(k, dtype=np.int64))
+    return (pv * powers[None, :]).sum(axis=1)
+
+
+class MultiGraphICLSequenceDatasetCategorical(IterableDataset):
+    """
+    ICL dataset for 3-class (or K-class) categorical BN.
+    Yields x (B, L, N+1) in {0,1,2}, y (B, K) = P(X_t in {0..K-1} | context).
+    """
+
+    def __init__(
+        self,
+        template: CategoricalTemplate,
+        cpt_list: list[np.ndarray],  # per-node (G, K^k_i, K)
+        seed: int,
+        spec: ICLBatchSpec,
+        return_full: bool = True,
+    ) -> None:
+        super().__init__()
+        self.template = template
+        self.cpt_list = cpt_list
+        self.spec = spec
+        self.return_full = return_full
+        self.rng = np.random.default_rng(seed)
+        self.num_graphs = int(cpt_list[0].shape[0])
+        self.K = template.cardinality
+        if len(cpt_list) != template.num_nodes:
+            raise BNError("cpt_list length must match template.num_nodes")
+        if spec.target_index is not None:
+            t = int(spec.target_index)
+            if not (0 <= t < template.num_nodes):
+                raise BNError(f"target_index must be in [0, {template.num_nodes - 1}]")
+        self.topo_nodes = list(template.topo_nodes)
+        self.num_nodes = template.num_nodes
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        B = int(self.spec.batch_graphs)
+        N = int(self.num_nodes)
+        K = self.K
+        dtype = self.spec.dtype
+        device = self.spec.device
+
+        while True:
+            t = int(self.rng.integers(0, N, dtype=np.int64))
+            parents_idx = self.template.parent_idx[t]
+            k = int(parents_idx.size)
+            num_configs = K ** k
+
+            if self.spec.num_example is not None:
+                num_examples = int(self.spec.num_example)
+            elif self.spec.min_context_len is not None and self.spec.max_context_len is not None:
+                num_examples = int(self.rng.integers(
+                    self.spec.min_context_len,
+                    self.spec.max_context_len + 1,
+                ))
+            else:
+                raise BNError("Must specify either num_example or (min_context_len, max_context_len)")
+
+            L = num_examples + 1
+            graph_ids = self.rng.integers(0, self.num_graphs, size=B, dtype=np.int64)
+            X_full = sample_many_graphs_categorical(
+                template=self.template,
+                cpt_list=self.cpt_list,
+                graph_ids=graph_ids,
+                num_examples=L,
+                rng=self.rng,
+            )
+
+            m = L - 1
+            X_ctx = X_full[:, :m, :]
+            y_ctx = X_ctx[:, :, t].astype(np.int64)
+
+            X_ctx_flat = X_ctx.reshape(B * m, N)
+            cfg_ctx = _parent_config_categorical(X_ctx_flat, parents_idx, K).reshape(B, m)
+            test_prefix = X_full[:, L - 1, :]
+            cfg_test = _parent_config_categorical(test_prefix, parents_idx, K)
+
+            # Bayesian estimate: Dirichlet(alpha,...,alpha) prior, counts from context
+            alpha = 0.5
+            y_probs = np.empty((B, K), dtype=np.float32)
+            for i in range(B):
+                tot = np.bincount(cfg_ctx[i], minlength=num_configs).astype(np.float64)
+                counts = np.zeros((num_configs, K), dtype=np.float64)
+                for v in range(K):
+                    counts[:, v] = np.bincount(cfg_ctx[i], weights=(y_ctx[i] == v).astype(np.float64), minlength=num_configs)
+                cfg = int(cfg_test[i])
+                if tot[cfg] > 0:
+                    row = (alpha + counts[cfg, :]) / (alpha * K + tot[cfg])
+                else:
+                    # No context with this parent config: use marginal over context
+                    marginal = (alpha + np.bincount(y_ctx[i], minlength=K).astype(np.float64)) / (alpha * K + m)
+                    row = marginal
+                y_probs[i] = row.astype(np.float32)
+
+            X_mask = X_full.copy()
+            if t + 1 < N:
+                X_mask[:, : L - 1, t + 1 :] = 0
+            X_mask[:, L - 1, t:] = 0
+            tgt = np.full((B, L, 1), t, dtype=np.int64)
+            X_out = np.concatenate([X_mask.astype(np.int64), tgt], axis=2)
+
+            batch: Dict[str, Any] = {
+                "x": torch.as_tensor(X_out, dtype=dtype, device=device),
+                "graph_id": torch.as_tensor(graph_ids, dtype=torch.long, device=device),
+                "topo_nodes": self.topo_nodes,
+                "target_index": t,
+                "y": torch.as_tensor(y_probs, dtype=torch.float32, device=device),
+            }
+            if self.return_full:
+                batch["full"] = torch.as_tensor(X_full, dtype=dtype, device=device)
             yield batch

@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 from .binary_bn import BinaryBayesNet
+from .categorical_bn import CategoricalBayesNet
+
 
 def get_sachs(seed=2000, set_random_cpts=True):
     rng = np.random.default_rng(seed)
@@ -66,6 +68,75 @@ def random_categorical_cpt(
     # Dirichlet(1,...,1) gives uniform over simplex; use alpha=1 per category
     p = rng.dirichlet(alpha=np.ones(num_categories), size=K_configs)
     return p.astype(np.float64)
+
+
+def random_categorical_cpt_3(
+    num_parents: int,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    """
+    Returns p[cfg, k] = P(X=k | cfg), shape (3^num_parents, 3), rows sum to 1.
+    For use with CategoricalBayesNet(cardinality=3); parent configs are 3^k.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    K_configs = 3 ** num_parents
+    p = rng.dirichlet(alpha=np.ones(3), size=K_configs)
+    return p.astype(np.float64)
+
+
+def random_categorical_cpt_K(
+    num_parents: int,
+    num_classes: int,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    """
+    Returns p[cfg, k] = P(X=k | cfg), shape (num_classes^num_parents, num_classes), rows sum to 1.
+    For use with CategoricalBayesNet(cardinality=num_classes).
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    K_configs = num_classes ** num_parents
+    p = rng.dirichlet(alpha=np.ones(num_classes), size=K_configs)
+    return p.astype(np.float64)
+
+
+def get_sachs_categorical(seed=2000, set_random_cpts=True, num_classes=3):
+    """
+    Same DAG as get_sachs (Sachs ground truth) but with a categorical BN (num_classes per node).
+    Returns CategoricalBayesNet(cardinality=num_classes). Default num_classes=3.
+    """
+    rng = np.random.default_rng(seed)
+    gt = pd.read_csv("/home/dennis/JASACODE/Sachs/GroundTruth.csv")
+    nodes = sorted(set(gt["from"]).union(set(gt["to"])))
+
+    bn = CategoricalBayesNet(cardinality=num_classes)
+    for n in nodes:
+        bn.add_node(n)
+    for u, v in gt[["from", "to"]].itertuples(index=False):
+        bn.add_edge(u, v)
+
+    parents = {n: [] for n in nodes}
+    for u, v in gt[["from", "to"]].itertuples(index=False):
+        parents[v].append(u)
+    for n in nodes:
+        bn.set_parents(n, sorted(parents[n]))
+
+    if set_random_cpts:
+        for n in nodes:
+            bn.set_cpt(n, random_categorical_cpt_K(len(parents[n]), num_classes, rng))
+    else:
+        # Use deterministic uniform CPTs purely to satisfy the compile-time
+        # requirement that every node has a CPT. Downstream code (e.g.,
+        # eval_sachs_real.py) replaces these CPTs with empirical ones and
+        # only relies on the structure extracted from the compiled template.
+        for n in nodes:
+            num_parents = len(parents[n])
+            num_configs = num_classes ** num_parents
+            uniform_row = np.full((num_configs, num_classes), 1.0 / num_classes, dtype=np.float64)
+            bn.set_cpt(n, uniform_row)
+
+    return bn
 
 
 def get_general(seed=2000):
@@ -266,4 +337,68 @@ def get_tree5(seed=2000):
     # bn.set_cpt("F", random_binary_cpt(1, rng))
     # bn.set_cpt("G", random_binary_cpt(1, rng))
 
+    return bn
+
+
+
+def get_general7(seed=2000):
+    r"""
+    7-node general DAG structure built ON TOP of the 5-node general.
+
+    The first 5 nodes (A–E) and their edges are identical to get_general_5node.
+    Two new leaf nodes F and G are added with multi-parent dependencies:
+
+    A   B          (roots, 0 parents)
+    |\ /
+    | C------+     (parents: A, B)
+    | / \    |
+    D    |   |     (parents: A, C)
+    |\   |   |
+    E \  |   |     (parents: D)          <-- same as 5-node!
+    |\ \ |   |
+    | F  |   |     (parents: D, E)
+    |     \ /
+    +------G       (parents: C, E)
+
+    Preserved 5-node edges:  A->C, B->C, A->D, C->D, D->E
+    New edges for F:         D->F, E->F
+    New edges for G:         C->G, E->G
+    """
+    rng = np.random.default_rng(seed)
+    bn = BinaryBayesNet()
+    
+    # Add nodes
+    for n in ["A", "B", "C", "D", "E", "F", "G"]:
+        bn.add_node(n)
+    
+    # --- Edges preserved from 5-node general ---
+    bn.add_edge("A", "C")
+    bn.add_edge("B", "C")
+    bn.add_edge("A", "D")
+    bn.add_edge("C", "D")
+    bn.add_edge("D", "E")
+    # --- New edges for F and G ---
+    bn.add_edge("D", "F")
+    bn.add_edge("E", "F")
+    bn.add_edge("C", "G")
+    bn.add_edge("E", "G")
+    
+    # Set parents (A–E identical to 5-node general)
+    bn.set_parents("A", [])
+    bn.set_parents("B", [])
+    bn.set_parents("C", ["A", "B"])
+    bn.set_parents("D", ["A", "C"])
+    bn.set_parents("E", ["D"])
+    bn.set_parents("F", ["D", "E"])
+    bn.set_parents("G", ["C", "E"])
+    
+    # Random CPTs
+    bn.set_cpt("A", random_binary_cpt(0, rng))
+    bn.set_cpt("B", random_binary_cpt(0, rng))
+    bn.set_cpt("C", random_binary_cpt(2, rng))
+    bn.set_cpt("D", random_binary_cpt(2, rng))
+    bn.set_cpt("E", random_binary_cpt(1, rng))
+    bn.set_cpt("F", random_binary_cpt(2, rng))
+    bn.set_cpt("G", random_binary_cpt(2, rng))
+    
     return bn

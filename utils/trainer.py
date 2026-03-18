@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 
-from model import NonCausalGPT2BinaryHead
+from model import NonCausalGPT2BinaryHead, NonCausalGPT2CategoricalHead
 
 
 class ICLLightningModule(pl.LightningModule):
@@ -14,7 +14,7 @@ class ICLLightningModule(pl.LightningModule):
         self,
         input_dim: int,
         init_lr: float = 3e-4,
-        weight_decay: float = 0.0,
+        weight_decay: float = 1e-2,
         max_steps: int = 100_000,
         warmup_steps: int = 1000,
         min_lr: float = 0.0,
@@ -90,4 +90,68 @@ class ICLLightningModule(pl.LightningModule):
                 "scheduler": scheduler,
                 "interval": "step",  # update learning rate every step
             },
+        }
+
+
+class ICLLightningModuleCategorical(pl.LightningModule):
+    """Lightning module for 3-class (or K-class) ICL: y (B, K) soft labels, cross-entropy vs softmax(logits)."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_classes: int = 3,
+        init_lr: float = 3e-4,
+        weight_decay: float = 0.0,
+        max_steps: int = 100_000,
+        warmup_steps: int = 1000,
+        min_lr: float = 0.0,
+        **model_kwargs,
+    ) -> None:
+        super().__init__()
+        self.save_hyperparameters()
+        self.model = NonCausalGPT2CategoricalHead(
+            input_dim=input_dim, num_classes=num_classes, **model_kwargs
+        )
+        self.num_classes = num_classes
+        self.init_lr = init_lr
+        self.weight_decay = weight_decay
+        self.max_steps = max_steps
+        self.warmup_steps = warmup_steps
+        self.min_lr = min_lr
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
+
+    def training_step(self, batch, batch_idx: int):
+        x = batch["x"]
+        y = batch["y"]  # (B, K) soft labels
+        logits = self(x)  # (B, K)
+        log_p = F.log_softmax(logits, dim=1)
+        # Soft cross-entropy: -sum_c y_c log p_c
+        loss = -(y * log_p).sum(dim=1).mean()
+        with torch.no_grad():
+            p_hat = F.softmax(logits, dim=1)
+            tv = 0.5 * (torch.abs(p_hat - y).sum(dim=1)).mean()
+        try:
+            current_lr = self.trainer.optimizers[0].param_groups[0]["lr"]
+            self.log("train/lr", current_lr, prog_bar=False, on_step=True, on_epoch=False)
+        except (AttributeError, IndexError):
+            pass
+        self.log("train/loss", loss, prog_bar=True, on_step=True, on_epoch=True)
+        self.log("train/tv", tv, prog_bar=True, on_step=True, on_epoch=True)
+        return loss
+
+    def configure_optimizers(self):
+        opt = torch.optim.AdamW(self.parameters(), lr=self.init_lr, weight_decay=self.weight_decay)
+        warmup_scheduler = LinearLR(
+            opt, start_factor=1e-8, end_factor=1.0, total_iters=self.warmup_steps
+        )
+        cosine_steps = max(1, self.max_steps - self.warmup_steps)
+        cosine_scheduler = CosineAnnealingLR(opt, T_max=cosine_steps, eta_min=self.min_lr)
+        scheduler = SequentialLR(
+            opt, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[self.warmup_steps]
+        )
+        return {
+            "optimizer": opt,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
         }

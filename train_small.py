@@ -109,7 +109,7 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--num-layers",
         type=int,
-        default=12,
+        default=2,
         help="Number of transformer layers.",
     )
 
@@ -163,7 +163,7 @@ def evaluate(args, model, run_dir):
         context_lens=[1, 2, 5, 10, 20, 50, 100, 200,  300, 400, 500],
         num_episodes=args.test_size,
         seed=123,
-        output_csv=run_dir + "_eval_tv.csv",
+        output_csv=run_dir + "_small_eval_tv.csv",
         device="cuda",
         infer_batch_size=4,
     )
@@ -397,9 +397,9 @@ def main():
         max_steps=args.train_step,
         warmup_steps=args.warmup_steps,
         min_lr=args.min_lr,
-        n_embd=256,
+        n_embd=64,
         n_layer=args.num_layers,
-        n_head=8,
+        n_head=2,
         dropout=0.1,
         max_seq_len=max_seq_len,
         disable_causal=True,   # best-effort patch
@@ -471,11 +471,11 @@ def main():
         trained_model.eval()
         
         print("Evaluating...")
-        eval_csv_path = run_dir + "_eval_tv.csv"
+        eval_csv_path = run_dir + "_small_eval_tv.csv"
         evaluate(args, trained_model, run_dir)
         
         print("Generating plots...")
-        plot_output_path = os.path.join(run_dir, "eval_tv_plot.png")
+        plot_output_path = os.path.join(run_dir, "small_eval_tv_plot.png")
         plot_results(args, eval_csv_path, plot_output_path)
 
 

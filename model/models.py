@@ -120,3 +120,62 @@ class NonCausalGPT2BinaryHead(nn.Module):
         h_last = h[:, -1, :]                             # (B, n_embd) test token
         logits = self.read_out(h_last).squeeze(-1)        # (B,)
         return logits
+
+
+class NonCausalGPT2CategoricalHead(nn.Module):
+    """
+    Same as NonCausalGPT2BinaryHead but predicts K classes.
+    read_out: (n_embd -> num_classes). Forward returns logits (B, num_classes).
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_classes: int = 3,
+        n_embd: int = 256,
+        n_layer: int = 6,
+        n_head: int = 8,
+        dropout: float = 0.0,
+        max_seq_len: int = 2048,
+        disable_causal: bool = True,
+    ) -> None:
+        super().__init__()
+        self.num_classes = num_classes
+        cfg = GPT2Config(
+            n_embd=n_embd,
+            n_layer=n_layer,
+            n_head=n_head,
+            n_positions=max_seq_len,
+            n_ctx=max_seq_len,
+            resid_pdrop=dropout,
+            embd_pdrop=dropout,
+            attn_pdrop=dropout,
+        )
+        self.gpt2 = GPT2Model(cfg)
+        self.max_seq_len = max_seq_len
+        if disable_causal:
+            _try_disable_causal_mask(self.gpt2)
+        if hasattr(self.gpt2, "wpe"):
+            nn.init.zeros_(self.gpt2.wpe.weight)
+            self.gpt2.wpe.weight.requires_grad = False
+        self.read_in = nn.Linear(input_dim, n_embd)
+        self.read_out = nn.Linear(n_embd, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, L, D). Returns logits (B, num_classes)."""
+        if x.dim() != 3:
+            raise ValueError(f"Expected x (B,L,D), got {tuple(x.shape)}")
+        x = x.float()
+        B, L, _ = x.shape
+        inputs_embeds = self.read_in(x)
+        attn_mask = torch.ones((B, L), device=x.device)
+        position_ids = torch.arange(L, device=x.device).unsqueeze(0).expand(B, -1)
+        position_ids = torch.clamp(position_ids, 0, self.max_seq_len - 1)
+        out = self.gpt2(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attn_mask,
+            position_ids=position_ids,
+        )
+        h_last = out.last_hidden_state[:, -1, :]
+        logits = self.read_out(h_last)
+        return logits
