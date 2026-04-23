@@ -39,6 +39,9 @@ parser.add_argument("--structure", type=str, default="tree",
                     help="Structure name for --eval-type fixed (tree, chain, general)")
 parser.add_argument("--num-nodes", type=int, default=5,
                     help="Number of nodes (used in the plot title)")
+parser.add_argument("--seeds", type=int, nargs="+",
+                    default=[1111, 2222, 3333, 4444, 5555],
+                    help="List of seeds to aggregate over")
 args = parser.parse_args()
 
 
@@ -57,7 +60,7 @@ plt.rcParams.update({
 
 
 # ── Load data across seeds ──────────────────────────────────────────────
-SEEDS = [1111, 2222, 3333, 4444, 5555]
+SEEDS = args.seeds
 
 rows = []
 for seed in SEEDS:
@@ -168,7 +171,8 @@ def plot_panel(ax, agg_df, value_mean_col, value_std_col, title, show_legend=Tru
     ax.set_ylabel("TV Distance")
     ax.grid(True, alpha=0.3)
     if show_legend:
-        ax.legend(fontsize=14, loc="upper right")
+        ncol = 2 if n_targets > 7 else 1
+        ax.legend(fontsize=10, loc="upper right", ncol=ncol)
 
 
 # (a) Transformer per-node

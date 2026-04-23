@@ -55,10 +55,10 @@ def sample_random_dag(
     num_nodes: int,
     edge_prob: float,
     rng: np.random.Generator,
+    ensure_connected: bool = True,
 ) -> BinaryBayesNet:
     """
-    Sample a random DAG with `num_nodes` nodes using Erdos-Renyi,
-    with a guarantee that every node has at least one edge.
+    Sample a random DAG with `num_nodes` nodes using Erdos-Renyi.
 
     Parameters
     ----------
@@ -68,6 +68,9 @@ def sample_random_dag(
         Probability of including each possible directed edge i -> j (i < j).
     rng : np.random.Generator
         NumPy random generator for reproducibility.
+    ensure_connected : bool
+        If True (default), fix isolated nodes so every node has >= 1 edge.
+        If False, allow isolated nodes.
 
     Returns
     -------
@@ -75,7 +78,6 @@ def sample_random_dag(
         A BayesNet with the random DAG structure and dummy CPTs (0.5).
         Node names are "X0", "X1", ..., "X{N-1}".
         Topological order = index order (guaranteed by construction).
-        Every node participates in at least one edge (no isolated nodes).
     """
     if not 0.0 <= edge_prob <= 1.0:
         raise ValueError(f"edge_prob must be in [0, 1], got {edge_prob}")
@@ -89,8 +91,9 @@ def sample_random_dag(
             if rng.random() < edge_prob:
                 edges.add((i, j))
 
-    # 2. Fix isolated nodes
-    edges = _ensure_no_isolated_nodes(num_nodes, edges, rng)
+    # 2. Optionally fix isolated nodes
+    if ensure_connected:
+        edges = _ensure_no_isolated_nodes(num_nodes, edges, rng)
 
     # 3. Build BinaryBayesNet
     bn = BinaryBayesNet()

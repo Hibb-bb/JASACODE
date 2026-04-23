@@ -34,6 +34,7 @@ class RandomDAGBatchSpec:
     num_example: Optional[int] = None           # fixed context length (L-1)
     min_context_len: Optional[int] = None       # dynamic context length range
     max_context_len: Optional[int] = None
+    ensure_connected: bool = True               # guarantee no isolated nodes
     dtype: torch.dtype = torch.long
     device: Optional[torch.device] = None
 
@@ -104,7 +105,8 @@ class RandomDAGICLDataset(IterableDataset):
         while True:
             # 1. Sample edge probability and random DAG
             p_edge = self._sample_edge_prob()
-            dag = sample_random_dag(N, p_edge, self.rng)
+            dag = sample_random_dag(N, p_edge, self.rng,
+                                    ensure_connected=self.spec.ensure_connected)
 
             # 2. Compile to template
             template: BNTemplate = compile_template_from_structure(dag)

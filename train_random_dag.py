@@ -28,6 +28,7 @@ from data import (
     # Fixed structures for generalization evaluation
     get_mixed_graph_structures,
     get_mixed_graph_structures_5node,
+    get_mixed_graph_structures_10node,
     get_structure_names,
 )
 from utils import ICLLightningModule, evaluate_tv_over_context_with_baselines, EvalSpec
@@ -56,6 +57,8 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         help="Min context length for dynamic sampling.")
     parser.add_argument("--max-context-len", type=int, default=500,
                         help="Max context length for dynamic sampling.")
+    parser.add_argument("--no-ensure-connected", action="store_true",
+                        help="Disable connectivity guarantee (allow isolated nodes).")
 
     # Training
     parser.add_argument("--train-step", type=int, default=100_000,
@@ -100,6 +103,8 @@ def evaluate_on_fixed_structures(args, model, run_dir):
         structures = get_mixed_graph_structures_5node(seed=args.seed + 5000)
     elif N == 7:
         structures = get_mixed_graph_structures(seed=args.seed + 5000)
+    elif N == 10:
+        structures = get_mixed_graph_structures_10node(seed=args.seed + 5000)
     else:
         print(f"  Skipping fixed-structure eval (no predefined structures for N={N})")
         return None
@@ -154,7 +159,9 @@ def evaluate_on_random_dags(args, model, run_dir):
         else:
             p_edge = float(eval_rng.uniform(args.edge_prob_min, args.edge_prob_max))
 
-        dag = sample_random_dag(N, p_edge, eval_rng)
+        ensure_connected = not args.no_ensure_connected
+        dag = sample_random_dag(N, p_edge, eval_rng,
+                                ensure_connected=ensure_connected)
         template = compile_template_from_structure(dag)
 
         num_edges = sum(len(pidx) for pidx in template.parent_idx)
@@ -200,6 +207,9 @@ def main():
         edge_str = f"p={args.edge_prob_min}to{args.edge_prob_max}"
         print(f"  Edge probability: Uniform({args.edge_prob_min}, {args.edge_prob_max})")
 
+    ensure_connected = not args.no_ensure_connected
+    print(f"  Connectivity guarantee: {ensure_connected}")
+
     pl.seed_everything(args.seed, workers=False)
 
     # ---- Build batch spec
@@ -213,6 +223,7 @@ def main():
             edge_prob_min=None if args.edge_prob is not None else args.edge_prob_min,
             edge_prob_max=None if args.edge_prob is not None else args.edge_prob_max,
             num_example=args.context_len,
+            ensure_connected=ensure_connected,
             dtype=torch.long,
             device=None,
         )
@@ -229,6 +240,7 @@ def main():
             num_example=None,
             min_context_len=args.min_context_len,
             max_context_len=args.max_context_len,
+            ensure_connected=ensure_connected,
             dtype=torch.long,
             device=None,
         )
@@ -275,7 +287,8 @@ def main():
     else:
         context_str = f"{args.min_context_len}to{args.max_context_len}"
 
-    run_name = f"rdag_seed{args.seed}_{N}nodes_{edge_str}_ctx{context_str}"
+    conn_tag = "" if ensure_connected else "_noconn"
+    run_name = f"rdag_seed{args.seed}_{N}nodes_{edge_str}_ctx{context_str}{conn_tag}"
     run_dir = os.path.join(args.output_dir, run_name)
     os.makedirs(run_dir, exist_ok=True)
 

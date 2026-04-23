@@ -325,6 +325,152 @@ def get_general_7node(seed=2000):
 
 
 # ============================================================
+#  10-node structures
+# ============================================================
+
+def get_tree_10node(seed=2000):
+    r"""
+    10-node binary tree structure:
+
+               A (root)
+              / \
+             B   C
+            / \ / \
+           D  E F  G
+          / \
+         H   I
+             |
+             J
+    """
+    rng = np.random.default_rng(seed)
+    bn = BinaryBayesNet()
+
+    for n in ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]:
+        bn.add_node(n)
+
+    bn.add_edge("A", "B")
+    bn.add_edge("A", "C")
+    bn.add_edge("B", "D")
+    bn.add_edge("B", "E")
+    bn.add_edge("C", "F")
+    bn.add_edge("C", "G")
+    bn.add_edge("D", "H")
+    bn.add_edge("D", "I")
+    bn.add_edge("I", "J")
+
+    bn.set_parents("A", [])
+    bn.set_parents("B", ["A"])
+    bn.set_parents("C", ["A"])
+    bn.set_parents("D", ["B"])
+    bn.set_parents("E", ["B"])
+    bn.set_parents("F", ["C"])
+    bn.set_parents("G", ["C"])
+    bn.set_parents("H", ["D"])
+    bn.set_parents("I", ["D"])
+    bn.set_parents("J", ["I"])
+
+    for n in ["A"]:
+        bn.set_cpt(n, random_binary_cpt(0, rng))
+    for n in ["B", "C", "D", "E", "F", "G", "H", "I", "J"]:
+        bn.set_cpt(n, random_binary_cpt(1, rng))
+
+    return bn
+
+
+def get_chain_10node(seed=2000):
+    r"""
+    10-node chain: A -> B -> C -> D -> E -> F -> G -> H -> I -> J
+    """
+    rng = np.random.default_rng(seed)
+    bn = BinaryBayesNet()
+    nodes = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]
+
+    for n in nodes:
+        bn.add_node(n)
+
+    for i in range(len(nodes) - 1):
+        bn.add_edge(nodes[i], nodes[i + 1])
+
+    bn.set_parents(nodes[0], [])
+    bn.set_cpt(nodes[0], random_binary_cpt(0, rng))
+    for i in range(1, len(nodes)):
+        bn.set_parents(nodes[i], [nodes[i - 1]])
+        bn.set_cpt(nodes[i], random_binary_cpt(1, rng))
+
+    return bn
+
+
+def get_general_10node(seed=2000):
+    r"""
+    10-node general DAG extending the 7-node general.
+
+    A   B
+    |\ /
+    |  C       (parents: A, B)
+    | / \
+    D    \     (parents: A, C)
+    |\    \
+    E \    |   (parents: D)
+    |\ \   |
+    |  F   |   (parents: D, E)
+    |      |
+    +------G   (parents: C, E)
+    
+    New nodes:
+      H        (parents: F, G)
+      I        (parents: E, H)
+      J        (parents: G, I)
+    """
+    rng = np.random.default_rng(seed)
+    bn = BinaryBayesNet()
+
+    for n in ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"]:
+        bn.add_node(n)
+
+    # 7-node general edges
+    bn.add_edge("A", "C")
+    bn.add_edge("B", "C")
+    bn.add_edge("A", "D")
+    bn.add_edge("C", "D")
+    bn.add_edge("D", "E")
+    bn.add_edge("D", "F")
+    bn.add_edge("E", "F")
+    bn.add_edge("C", "G")
+    bn.add_edge("E", "G")
+    # New edges
+    bn.add_edge("F", "H")
+    bn.add_edge("G", "H")
+    bn.add_edge("E", "I")
+    bn.add_edge("H", "I")
+    bn.add_edge("G", "J")
+    bn.add_edge("I", "J")
+
+    bn.set_parents("A", [])
+    bn.set_parents("B", [])
+    bn.set_parents("C", ["A", "B"])
+    bn.set_parents("D", ["A", "C"])
+    bn.set_parents("E", ["D"])
+    bn.set_parents("F", ["D", "E"])
+    bn.set_parents("G", ["C", "E"])
+    bn.set_parents("H", ["F", "G"])
+    bn.set_parents("I", ["E", "H"])
+    bn.set_parents("J", ["G", "I"])
+
+    bn.set_cpt("A", random_binary_cpt(0, rng))
+    bn.set_cpt("B", random_binary_cpt(0, rng))
+    bn.set_cpt("C", random_binary_cpt(2, rng))
+    bn.set_cpt("D", random_binary_cpt(2, rng))
+    bn.set_cpt("E", random_binary_cpt(1, rng))
+    bn.set_cpt("F", random_binary_cpt(2, rng))
+    bn.set_cpt("G", random_binary_cpt(2, rng))
+    bn.set_cpt("H", random_binary_cpt(2, rng))
+    bn.set_cpt("I", random_binary_cpt(2, rng))
+    bn.set_cpt("J", random_binary_cpt(2, rng))
+
+    return bn
+
+
+# ============================================================
 #  Convenience functions (use 7-node for training)
 # ============================================================
 
@@ -353,6 +499,20 @@ def get_mixed_graph_structures_5node(seed=2000):
         get_tree_5node(seed),
         get_chain_5node(seed + 1),
         get_general_5node(seed + 2),
+    ]
+
+
+def get_mixed_graph_structures_10node(seed=2000):
+    """
+    Returns a list of 3 different 10-node graph structures.
+
+    Returns:
+        list[BinaryBayesNet]: [tree, chain, general]
+    """
+    return [
+        get_tree_10node(seed),
+        get_chain_10node(seed + 1),
+        get_general_10node(seed + 2),
     ]
 
 
