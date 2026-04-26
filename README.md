@@ -113,7 +113,7 @@ def get_sprinkler(seed=2000):
 
 Next, modify `train.py` so it imports `get_sprinkler` from `data/graphs.py`.
 
-## Plotting
+## Outputs
 
 | File | Use |
 |------|-----|
