@@ -1,18 +1,3 @@
-#!/bin/bash
-#SBATCH --account=p32626
-#SBATCH --job-name=plot_rdag7n
-#SBATCH --nodes=1
-#SBATCH --output=/projects/p32626/JASACODE/slurm_log/slurm_plot_rdag7dense_%j.out
-#SBATCH --error=/projects/p32626/JASACODE/slurm_log/slurm_plot_rdag7dense_%j.err
-#SBATCH --time=00:10:00
-#SBATCH --partition=short
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=8G
-#SBATCH --mail-type=ALL
-#SBATCH --mail-user=b0976960890@gmail.com
-
-cd /projects/p32626/JASACODE
 source .venv/bin/activate
 
 NUM_NODES=7
