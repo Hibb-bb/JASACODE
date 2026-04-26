@@ -1,0 +1,4 @@
+outputs/
+outputs_pred/
+runs/
+**/__pycache__/
