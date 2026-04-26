@@ -1,5 +1,10 @@
 from .binary_bn import BinaryBayesNet, BNError
-from .bn_template import BNTemplate, compile_template_from_structure, init_graph_params_uniform
+from .bn_template import (
+    BNTemplate,
+    compile_template_from_structure,
+    init_graph_params_uniform,
+    init_graph_params_beta,
+)
 from .categorical_template import CategoricalTemplate, compile_template_from_categorical, init_graph_params_categorical
 from .multigraph_sampler import sample_many_graphs, sample_many_graphs_categorical, MultiGraphBatchSampler
 from .dataset import ICLBatchSpec, MultiGraphICLSequenceDataset, MultiGraphICLSequenceDatasetCategorical
@@ -12,6 +17,7 @@ __all__ = [
     "BNTemplate",
     "compile_template_from_structure",
     "init_graph_params_uniform",
+    "init_graph_params_beta",
     "CategoricalTemplate",
     "compile_template_from_categorical",
     "init_graph_params_categorical",

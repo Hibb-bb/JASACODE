@@ -1,5 +1,6 @@
 import argparse
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -35,9 +36,11 @@ plt.rcParams.update({
 
 SEEDS = [1111, 2222, 3333, 4444, 5555]
 
+# /projects/b1094/ywl7940/JASACODE/runs/chain5/seed_1111/500/L2/20000_eval_tv.csv
+
 rows = []
 for seed in SEEDS:
-    base_dir = Path("/home/dennis/JASACODE/runs") / args.graph / f"seed_{seed}" / args.context
+    base_dir = Path(f"/projects/b1094/ywl7940/JASACODE/runs/{args.graph}/seed_{seed}/{args.context}") 
     # New-style path with L<num_layers> subfolder
     new_path = base_dir / f"L{args.num_layers}" / f"{args.train_size}_eval_tv.csv"
     # Backwards-compatible fallback to old path without L<num_layers>
@@ -127,12 +130,20 @@ def plot_panel(ax, agg_df, value_mean_col, value_std_col, title, show_legend=Tru
         ax.legend(fontsize=14, loc="upper right")
         # ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", frameon=False, fontsize=8)
 
-# (1) Top left: Transformer - all target indices (only panel with target index legend)
+# (a) Top left: Transformer - all target indices (only panel with target index legend)
 plot_panel(axes[0, 0], agg, "tv_model_mean", "tv_model_std", "Transformer", show_legend=True)
 axes[0, 0].set_xlabel("")
 
-# (2) Top right: Average across all target indices with all 3 baselines (with std)
-ax_tr = axes[0, 1]
+# (d) Top right: Bayesian baseline - all target indices (no duplicate target legend)
+plot_panel(axes[0, 1], agg, "tv_bayes_mean", "tv_bayes_std", "Bayesian Inference", show_legend=False)
+axes[0, 1].set_xlabel("")
+axes[0, 1].set_ylabel("")
+
+# (c) Bottom left: Naive baseline - all target indices (no duplicate target legend)
+plot_panel(axes[1, 0], agg, "tv_naive_mean", "tv_naive_std", "Naive Inference", show_legend=False)
+
+# (b) Bottom right: Average across all target indices with all 3 baselines (with std)
+ax_tr = axes[1, 1]
 for col, label in [
     ("tv_model", "Transformer"),
     ("tv_naive", "Naive"),
@@ -146,33 +157,46 @@ for col, label in [
         yerr = None
     ax_tr.errorbar(x, y, yerr=yerr, marker="o", label=label, capsize=3, capthick=1)
 ax_tr.set_title("Averaged Across Nodes")
-ax_tr.set_xlabel("")
+ax_tr.set_xlabel("Number of Examples")
 ax_tr.set_ylabel("")
 ax_tr.grid(True, alpha=0.3)
 ax_tr.legend(fontsize=14, loc="upper right")
 
 # ax_tr.legend(bbox_to_anchor=(1.05, 1), loc="upper left", frameon=False)
 
-# (3) Bottom left: Naive baseline - all target indices (no duplicate target legend)
-plot_panel(axes[1, 0], agg, "tv_naive_mean", "tv_naive_std", "Naive Inference", show_legend=False)
-
-# (4) Bottom right: Bayesian baseline - all target indices (no duplicate target legend)
-plot_panel(axes[1, 1], agg, "tv_bayes_mean", "tv_bayes_std", "Bayesian", show_legend=False)
+# Keep y-label only on left column for cleaner layout
 axes[1, 1].set_ylabel("")
 
-# Panel labels (a), (b), (c), (d)
+# Panel labels (a), (b), (c), (d) in standard reading order
 for ax, label in zip(axes.flat, ["(a)", "(b)", "(c)", "(d)"]):
     ax.text(0.02, 0.98, label, transform=ax.transAxes, fontsize=font_size, fontweight="bold", va="top", ha="left")
 
 # Overall title (slightly larger font)
-title_str = f"{args.graph}".upper()
-title_str = args.graph.replace("_", " ").title()
+
+if args.graph == "general7":
+    title_str = "General (7 Node)" 
+
+elif args.graph == "tree":
+    title_str = "Tree (7 Node)" 
+
+elif args.graph == "chain":
+    title_str = "Chain (7 Node)" 
+
+elif args.graph == "general":
+    title_str = "General (5 Node)" 
+
+elif args.graph == "tree5":
+    title_str = "Tree (5 Node)" 
+
+elif args.graph == "chain5":
+    title_str = "Chain (5 Node)" 
+
+# title_str = f"{args.graph}".upper()
+# title_str = args.graph.replace("_", " ").title()
 fig.suptitle(title_str, fontsize=font_size + 6, y=0.90)
 fig.tight_layout(rect=[0, 0, 1, 0.96])
-out_path = Path(f"/home/dennis/JASACODE/imgs/{args.graph}_final.png")
+out_path = Path(f"/projects/b1094/ywl7940/JASACODE/imgs/{args.graph}_final.png")
 out_path.parent.mkdir(parents=True, exist_ok=True)
 plt.savefig(out_path, dpi=600, bbox_inches="tight")
 plt.close()
 print(f"Saved: {out_path}")
-
-

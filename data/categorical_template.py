@@ -34,24 +34,31 @@ def init_graph_params_categorical(
     template: CategoricalTemplate,
     num_graphs: int,
     seed: int | None = None,
+    dirichlet_alpha: float = 1.0,
 ) -> List[np.ndarray]:
     """
-    Returns per-node CPT tables for many graphs. Each row is Dirichlet(1,...,1).
+    Returns per-node CPT tables for many graphs. Each CPT row is Dirichlet(α,...,α) over K classes.
+
+    dirichlet_alpha: Symmetric concentration per class. α=1 → uniform on simplex (exchangeable).
+    α < 1 → more peaked / "less uniform" rows; α > 1 → concentrated near (1/K,...,1/K).
 
     Output:
         cpt_list: length = num_nodes
         cpt_list[i] has shape (G, K^k_i, K) with K = template.cardinality.
     """
+    if dirichlet_alpha <= 0:
+        raise BNError(f"dirichlet_alpha must be > 0, got {dirichlet_alpha}")
     rng = np.random.default_rng(seed)
     G = int(num_graphs)
     K = template.cardinality
+    alpha_vec = np.full(K, float(dirichlet_alpha), dtype=np.float64)
 
     cpt_list: List[np.ndarray] = []
     for parents in template.parent_idx:
         k = int(parents.size)
         num_configs = K ** k
         # (G, num_configs, K) - each row sums to 1
-        p = rng.dirichlet(alpha=np.ones(K), size=(G, num_configs))
+        p = rng.dirichlet(alpha=alpha_vec, size=(G, num_configs))
         cpt_list.append(p.astype(np.float64))
 
     return cpt_list

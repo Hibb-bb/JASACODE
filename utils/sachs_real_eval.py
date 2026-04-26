@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -12,11 +11,13 @@ from data.categorical_template import CategoricalTemplate
 
 from .evaluate import (
     EvalSpec,
+    _bayes_context_tot_at_test_cfg_cat,
     _build_icl_x,
     _compute_parent_cfg_categorical,
-    _naive_marginal_from_context_categorical,
+    _naive_graph_agnostic_from_context_categorical,
+    _naive_context_tot_at_prefix_cat,
     _bayes_cpt_from_context_categorical,
-    _tv_categorical,
+    _tv_categorical_safe,
 )
 
 
@@ -94,53 +95,35 @@ def encode_disc_df_to_int(
 def empirical_cpt_from_data(
     X_data: np.ndarray,           # (num_obs, N), int in {0..K-1}
     template: CategoricalTemplate,
-    alpha: float = 0.5,
 ) -> List[np.ndarray]:
     """
-    Build empirical CPTs for each node using full dataset.
+    Build empirical CPTs (MLE, no smoothing) for each node from the full dataset.
 
-    For node t with k parents and cardinality K, we compute counts
-        counts[cfg, v] = # {(row i): parent_cfg(i)=cfg, X_t(i)=v}
-    then apply Dirichlet smoothing with concentration alpha:
-        CPT[cfg, v] ∝ alpha + counts[cfg, v].
-
-    Parameters
-    ----------
-    X_data:
-        Array of shape (num_obs, N) with integer codes 0..K-1.
-    template:
-        CategoricalTemplate describing the Sachs DAG and cardinality.
-    alpha:
-        Dirichlet prior parameter per category.
-
-    Returns
-    -------
-    cpt_list:
-        List of length N. Entry t has shape (K^k_t, K).
+    CPT[cfg, v] = counts[cfg, v] / sum_v counts[cfg, v]; if the row sum is 0, use uniform 1/K.
     """
     N = template.num_nodes
     K = template.cardinality
     num_obs = X_data.shape[0]
     cpt_list: List[np.ndarray] = []
+    uniform = np.full(K, 1.0 / K, dtype=np.float64)
 
     for t in range(N):
         parents_idx = template.parent_idx[t]
         k = int(parents_idx.size)
         if k == 0:
-            # No parents: single-row CPT using marginal counts.
             counts = np.zeros((1, K), dtype=np.float64)
             y = X_data[:, t].astype(np.int64)
             for v in range(K):
                 counts[0, v] = np.sum(y == v)
-            cpt = (alpha + counts) / (alpha * K + num_obs)
+            row_sum = counts.sum()
+            cpt = counts / row_sum if row_sum > 0 else uniform.reshape(1, K)
             cpt_list.append(cpt.astype(np.float64))
             continue
 
         num_configs = K ** k
-        # Parent configs for all observations
         cfg_all = _compute_parent_cfg_categorical(
             X_data, parents_idx, K
-        ).astype(np.int64)  # (num_obs,)
+        ).astype(np.int64)
 
         counts = np.zeros((num_configs, K), dtype=np.float64)
         y = X_data[:, t].astype(np.int64)
@@ -150,10 +133,11 @@ def empirical_cpt_from_data(
             v = int(y[i])
             counts[cfg, v] += 1.0
 
-        # Dirichlet(alpha,...,alpha) per configuration
-        numer = alpha + counts
-        denom = alpha * K + counts.sum(axis=1, keepdims=True)
-        cpt = numer / denom
+        row_sums = counts.sum(axis=1, keepdims=True)
+        cpt = np.divide(counts, row_sums, out=np.zeros_like(counts), where=row_sums > 0)
+        zero_rows = row_sums.squeeze() == 0
+        if np.any(zero_rows):
+            cpt[zero_rows, :] = uniform
         cpt_list.append(cpt.astype(np.float64))
 
     return cpt_list
@@ -166,21 +150,12 @@ def evaluate_tv_over_context_categorical_real(
     cpt_emp_list: List[np.ndarray],     # empirical CPTs from empirical_cpt_from_data
     spec: EvalSpec,
     treatment_name: str,
-    *,
-    naive_alpha: float = 0.5,
-    bayes_alpha: float = 0.5,
 ) -> None:
     """
     Evaluate transformer on REAL Sachs data for a single treatment.
 
-    This mirrors evaluate_tv_over_context_categorical_with_baselines but:
-      - draws ICL episodes by sampling rows from X_data (real observations)
-      - uses cpt_emp_list as the "population" CPTs (one per node, per parent config).
-
-    Writes a CSV with columns:
-        treatment, context_len, target_index, episode,
-        y_test, parents_cfg,
-        tv_model, tv_naive, tv_bayes
+    Draws ICL episodes from X_data. Naive: P(X_t|x_0..x_{t-1}) graph-agnostic; Bayes: true parents.
+    Same masking as the model; no smoothing; non-finite or zero-match TV -> 1.0.
     """
     N = template.num_nodes
     K = template.cardinality
@@ -263,17 +238,25 @@ def evaluate_tv_over_context_categorical_real(
                             .astype(np.float64)
                         )
 
-                    # Baselines from context only
-                    p_hat_naive = _naive_marginal_from_context_categorical(
-                        X_full, t, K, alpha=naive_alpha
+                    p_hat_naive = _naive_graph_agnostic_from_context_categorical(
+                        X_full, template, t,
                     )
                     p_hat_bayes = _bayes_cpt_from_context_categorical(
-                        X_full, template, t, alpha=bayes_alpha
+                        X_full, template, t,
                     )
 
-                    tv_model = _tv_categorical(p_hat_model, p_true)
-                    tv_naive = _tv_categorical(p_hat_naive, p_true)
-                    tv_bayes = _tv_categorical(p_hat_bayes, p_true)
+                    tv_model = _tv_categorical_safe(p_hat_model, p_true)
+                    tv_naive = _tv_categorical_safe(p_hat_naive, p_true)
+                    tv_bayes = _tv_categorical_safe(p_hat_bayes, p_true)
+
+                    if m == 0:
+                        tv_naive = np.ones_like(tv_naive)
+                    naive_tot = _naive_context_tot_at_prefix_cat(X_full, template, t)
+                    tv_naive = np.where(naive_tot == 0, 1.0, tv_naive)
+                    bayes_tot = _bayes_context_tot_at_test_cfg_cat(
+                        X_full, template, t,
+                    )
+                    tv_bayes = np.where(bayes_tot == 0, 1.0, tv_bayes)
 
                     for bi in range(B):
                         writer.writerow(

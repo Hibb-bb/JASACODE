@@ -2,3 +2,7 @@ outputs/
 outputs_pred/
 runs/
 **/__pycache__/
+
+# Slurm / local logs (can exceed GitHub file limits)
+*.out
+*.err

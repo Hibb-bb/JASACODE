@@ -7,6 +7,7 @@ import os
 import torch
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer
+from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 
@@ -16,7 +17,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from data import (
-    get_sachs_categorical,
+    get_sachs,
     compile_template_from_categorical,
     init_graph_params_categorical,
     ICLBatchSpec,
@@ -70,7 +71,7 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--train-size",
         type=int,
-        default=1000,
+        default=10000,
         help="Number of graphs used for training.",
     )
     parser.add_argument(
@@ -78,6 +79,13 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         type=int,
         default=1000,
         help="Number of graphs used for testing.",
+    )
+    parser.add_argument(
+        "--cpt-dirichlet-alpha",
+        type=float,
+        default=0.1,
+        help="Symmetric Dirichlet α per class for random training/test CPT rows. "
+        "<1 = more peaked (less uniform); 1 = uniform on simplex; >1 = closer to flat 1/K.",
     )
 
     # Training
@@ -96,7 +104,7 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--warmup-steps",
         type=int,
-        default=1000,
+        default=2000,
         help="Number of warmup steps for learning rate scheduler.",
     )
     parser.add_argument(
@@ -108,7 +116,7 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--num-layers",
         type=int,
-        default=12,
+        default=4,
         help="Number of transformer layers.",
     )
 
@@ -146,11 +154,14 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 def evaluate(args, model, run_dir):
     """Evaluate on 3-class Sachs: fixed test graphs and categorical TV."""
-    bn = get_sachs_categorical(seed=args.seed + 999)
+    bn = get_sachs(seed=args.seed + 999)
     template = compile_template_from_categorical(bn)
     param_rng = np.random.default_rng(args.seed + 1000)
     cpt_list = init_graph_params_categorical(
-        template, num_graphs=args.test_size, seed=param_rng
+        template,
+        num_graphs=args.test_size,
+        seed=param_rng,
+        dirichlet_alpha=args.cpt_dirichlet_alpha,
     )
     spec = EvalSpec(
         context_lens=[1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500],
@@ -158,7 +169,7 @@ def evaluate(args, model, run_dir):
         seed=123,
         output_csv=run_dir + "_eval_tv.csv",
         device="cuda",
-        infer_batch_size=4,
+        infer_batch_size=32,
     )
     evaluate_tv_over_context_categorical_with_baselines(
         model, template, cpt_list, spec
@@ -306,15 +317,21 @@ def main():
     print(f"Using {args.num_layers} transformer layers")
 
 
-    bn = get_sachs_categorical(seed=args.seed)
+    bn = get_sachs(seed=args.seed)
     print("Compiling template...")
     template = compile_template_from_categorical(bn)
 
     pl.seed_everything(args.seed, workers=False)
 
-    print("Initializing graph parameters (3-class Sachs)...")
+    print(
+        "Initializing graph parameters (3-class Sachs), "
+        f"Dirichlet α={args.cpt_dirichlet_alpha} per class..."
+    )
     cpt_list_train = init_graph_params_categorical(
-        template, num_graphs=args.train_size, seed=args.seed
+        template,
+        num_graphs=args.train_size,
+        seed=args.seed,
+        dirichlet_alpha=args.cpt_dirichlet_alpha,
     )
     print("Creating batch specification...")
     print("Using random target index sampling per batch (all target indices will be trained)")
@@ -408,14 +425,16 @@ def main():
 
     torch.set_float32_matmul_precision('high')
 
+    # Multi-GPU: use all visible GPUs (respects CUDA_VISIBLE_DEVICES / Slurm).
+    # Standard DDP — avoid ddp_find_unused_parameters_true (extra overhead per step).
     trainer = Trainer(
         callbacks=[ckpt_cb],
         max_steps=args.train_step,
         accelerator="auto",
         devices="auto",
-        strategy="ddp_find_unused_parameters_true",
+        strategy=DDPStrategy(find_unused_parameters=True),
         logger=logger,
-        log_every_n_steps=1000,
+        log_every_n_steps=100,
         enable_checkpointing=True,
         default_root_dir=run_dir,
         gradient_clip_val=1.0,

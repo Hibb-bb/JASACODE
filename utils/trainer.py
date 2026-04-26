@@ -94,14 +94,14 @@ class ICLLightningModule(pl.LightningModule):
 
 
 class ICLLightningModuleCategorical(pl.LightningModule):
-    """Lightning module for 3-class (or K-class) ICL: y (B, K) soft labels, cross-entropy vs softmax(logits)."""
+    """Lightning module for K-class ICL: y (B, K) soft labels; loss = L1 on softmax vs y (robust to sharp y)."""
 
     def __init__(
         self,
         input_dim: int,
         num_classes: int = 3,
         init_lr: float = 3e-4,
-        weight_decay: float = 0.0,
+        weight_decay: float = 0.01,
         max_steps: int = 100_000,
         warmup_steps: int = 1000,
         min_lr: float = 0.0,
@@ -124,14 +124,13 @@ class ICLLightningModuleCategorical(pl.LightningModule):
 
     def training_step(self, batch, batch_idx: int):
         x = batch["x"]
-        y = batch["y"]  # (B, K) soft labels
+        y = batch["y"]  # (B, K) empirical CPT (soft labels)
         logits = self(x)  # (B, K)
-        log_p = F.log_softmax(logits, dim=1)
-        # Soft cross-entropy: -sum_c y_c log p_c
-        loss = -(y * log_p).sum(dim=1).mean()
+        p_hat = F.softmax(logits, dim=1)
+        # L1 on probability vectors (mean ℓ1 per example); same gradient shape as minimizing 2×TV.
+        loss = (p_hat - y.float()).abs().sum(dim=1).mean()
         with torch.no_grad():
-            p_hat = F.softmax(logits, dim=1)
-            tv = 0.5 * (torch.abs(p_hat - y).sum(dim=1)).mean()
+            tv = 0.5 * (torch.abs(p_hat - y.float()).sum(dim=1)).mean()
         try:
             current_lr = self.trainer.optimizers[0].param_groups[0]["lr"]
             self.log("train/lr", current_lr, prog_bar=False, on_step=True, on_epoch=False)

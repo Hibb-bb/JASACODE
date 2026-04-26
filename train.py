@@ -109,7 +109,7 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--num-layers",
         type=int,
-        default=12,
+        default=2,
         help="Number of transformer layers.",
     )
 
@@ -135,10 +135,8 @@ def evaluate(args, model, run_dir):
 
     if args.graph == "tree":
         bn = get_tree()
-
     elif args.graph == "general":
         bn = get_general()
-
     elif args.graph == "chain":
         bn = get_chain()
 
@@ -149,10 +147,14 @@ def evaluate(args, model, run_dir):
     elif args.graph == "general5":
         bn = get_general5()
 
+    elif args.graph == "general7":
+        bn = get_general7()
+
+
     template = compile_template_from_structure(bn)
     # list of (test_size, 2^k)
 
-    param_rng = np.random.default_rng(args.seed + 1000)  # Different seed for test graphs
+    param_rng = np.random.default_rng(args.seed + 947)  # Different seed for test graphs
 
     p1_list = init_graph_params_uniform(
         template, num_graphs=args.test_size, seed=param_rng
@@ -162,10 +164,10 @@ def evaluate(args, model, run_dir):
     spec = EvalSpec(
         context_lens=[1, 2, 5, 10, 20, 50, 100, 200,  300, 400, 500],
         num_episodes=args.test_size,
-        seed=123,
+        seed=args.seed,
         output_csv=run_dir + "_eval_tv.csv",
         device="cuda",
-        infer_batch_size=4,
+        infer_batch_size=16,
     )
     # evaluate_tv_over_context(model, template, p1_list, spec)
     evaluate_tv_over_context_with_baselines(model, template, p1_list, spec)
@@ -434,18 +436,19 @@ def main():
 
     torch.set_float32_matmul_precision('high')
 
+    # Multi-GPU: use all visible GPUs (respects CUDA_VISIBLE_DEVICES / Slurm).
+    # Standard DDP — avoid ddp_find_unused_parameters_true (extra overhead per step).
     trainer = Trainer(
         callbacks=[ckpt_cb],
         max_steps=args.train_step,
         accelerator="auto",
         devices="auto",
-        strategy="ddp_find_unused_parameters_true",
+        strategy='ddp_find_unused_parameters_true',
         logger=logger,
         log_every_n_steps=100,
         enable_checkpointing=True,
         default_root_dir=run_dir,
         gradient_clip_val=1.0,
-        # precision="32-true",
     )
 
     print("Training...")

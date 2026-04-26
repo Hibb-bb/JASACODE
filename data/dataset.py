@@ -118,8 +118,8 @@ class MultiGraphICLSequenceDataset(IterableDataset):
                 rng=self.rng,
             )
 
-            # Masked copy
-            X_mask = X_full.copy()
+            # Masked copy (-1 sentinel). Use signed dtype: X_full may be uint8 from sampler.
+            X_mask = X_full.astype(np.int64, copy=True)
             
             # Compute population CPT estimate from context examples (Bayesian estimation with known DAG structure)
             # This estimates P(X_t=1 | parent_config) from the context examples, not from ground truth CPT
@@ -161,14 +161,14 @@ class MultiGraphICLSequenceDataset(IterableDataset):
             
             # Context rows: mask strictly future nodes (t+1:)
             if t + 1 < N:
-                X_mask[:, : L - 1, t + 1 :] = 0
+                X_mask[:, : L - 1, t + 1 :] = -1
 
             # Test row: mask target and future (t:)
-            X_mask[:, L - 1, t:] = 0
+            X_mask[:, L - 1, t:] = -1
 
             # Append target index feature as last dimension -> (B, L, N+1)
             tgt = np.full((B, L, 1), t, dtype=np.int64)
-            X_out = np.concatenate([X_mask.astype(np.int64), tgt], axis=2)
+            X_out = np.concatenate([X_mask, tgt], axis=2)
 
             batch: Dict[str, Any] = {
                 "x": torch.as_tensor(X_out, dtype=dtype, device=device),          # (B, L, N+1)
@@ -199,7 +199,11 @@ def _parent_config_categorical(
 class MultiGraphICLSequenceDatasetCategorical(IterableDataset):
     """
     ICL dataset for 3-class (or K-class) categorical BN.
-    Yields x (B, L, N+1) in {0,1,2}, y (B, K) = P(X_t in {0..K-1} | context).
+    Yields x (B, L, N+1) in {0,1,2}, y (B, K) = empirical P(X_t | parent cfg) from context.
+
+    For each batch element, resamples that episode (graph + trajectory) until at least one
+    context row shares the test row's parent configuration for node t, so y always uses the
+    CPT row estimate (no marginal fallback). No cap on retries.
     """
 
     def __init__(
@@ -251,6 +255,10 @@ class MultiGraphICLSequenceDatasetCategorical(IterableDataset):
                 raise BNError("Must specify either num_example or (min_context_len, max_context_len)")
 
             L = num_examples + 1
+            m = L - 1
+            if m < 1:
+                raise BNError("Categorical ICL requires at least one context row (num_examples >= 1).")
+
             graph_ids = self.rng.integers(0, self.num_graphs, size=B, dtype=np.int64)
             X_full = sample_many_graphs_categorical(
                 template=self.template,
@@ -260,38 +268,92 @@ class MultiGraphICLSequenceDatasetCategorical(IterableDataset):
                 rng=self.rng,
             )
 
-            m = L - 1
-            X_ctx = X_full[:, :m, :]
-            y_ctx = X_ctx[:, :, t].astype(np.int64)
+            for i in range(B):
+                while True:
+                    X_ctx_i = X_full[i, :m, :]
+                    cfg_ctx_i = _parent_config_categorical(
+                        X_ctx_i.reshape(m, N), parents_idx, K
+                    )
+                    cfg_test_i = int(
+                        _parent_config_categorical(
+                            X_full[i, L - 1 : L, :].reshape(1, N),
+                            parents_idx,
+                            K,
+                        )[0]
+                    )
+                    tot_i = np.bincount(cfg_ctx_i, minlength=num_configs)
+                    if tot_i[cfg_test_i] > 0:
+                        break
+                    gid = int(self.rng.integers(0, self.num_graphs, dtype=np.int64))
+                    graph_ids[i] = gid
+                    X_row = sample_many_graphs_categorical(
+                        template=self.template,
+                        cpt_list=self.cpt_list,
+                        graph_ids=np.array([gid], dtype=np.int64),
+                        num_examples=L,
+                        rng=self.rng,
+                    )
+                    X_full[i] = X_row[0]
 
-            X_ctx_flat = X_ctx.reshape(B * m, N)
-            cfg_ctx = _parent_config_categorical(X_ctx_flat, parents_idx, K).reshape(B, m)
+            # Compute soft label y = empirical P(X_t | parent_cfg) from context only (no label smoothing).
+            # Safety: if the needed parent_cfg has zero count, resample that episode i until it doesn't.
+            X_ctx = X_full[:, :m, :].copy()
+            y_ctx = X_ctx[:, :, t].astype(np.int64).copy()
+            cfg_ctx = _parent_config_categorical(
+                X_ctx.reshape(B * m, N), parents_idx, K
+            ).reshape(B, m).copy()
             test_prefix = X_full[:, L - 1, :]
-            cfg_test = _parent_config_categorical(test_prefix, parents_idx, K)
+            cfg_test = np.asarray(
+                _parent_config_categorical(test_prefix, parents_idx, K),
+                dtype=np.int64,
+            )
 
-            # Bayesian estimate: Dirichlet(alpha,...,alpha) prior, counts from context
-            alpha = 0.5
             y_probs = np.empty((B, K), dtype=np.float32)
             for i in range(B):
-                tot = np.bincount(cfg_ctx[i], minlength=num_configs).astype(np.float64)
-                counts = np.zeros((num_configs, K), dtype=np.float64)
-                for v in range(K):
-                    counts[:, v] = np.bincount(cfg_ctx[i], weights=(y_ctx[i] == v).astype(np.float64), minlength=num_configs)
-                cfg = int(cfg_test[i])
-                if tot[cfg] > 0:
-                    row = (alpha + counts[cfg, :]) / (alpha * K + tot[cfg])
-                else:
-                    # No context with this parent config: use marginal over context
-                    marginal = (alpha + np.bincount(y_ctx[i], minlength=K).astype(np.float64)) / (alpha * K + m)
-                    row = marginal
-                y_probs[i] = row.astype(np.float32)
+                while True:
+                    tot = np.bincount(cfg_ctx[i], minlength=num_configs).astype(np.float64)
+                    counts = np.zeros((num_configs, K), dtype=np.float64)
+                    for v in range(K):
+                        counts[:, v] = np.bincount(
+                            cfg_ctx[i],
+                            weights=(y_ctx[i] == v).astype(np.float64),
+                            minlength=num_configs,
+                        )
+                    cfg = int(cfg_test[i])
+                    if tot[cfg] > 0:
+                        y_probs[i] = (counts[cfg, :] / tot[cfg]).astype(np.float32)
+                        break
 
-            X_mask = X_full.copy()
+                    gid = int(self.rng.integers(0, self.num_graphs, dtype=np.int64))
+                    graph_ids[i] = gid
+                    X_row = sample_many_graphs_categorical(
+                        template=self.template,
+                        cpt_list=self.cpt_list,
+                        graph_ids=np.array([gid], dtype=np.int64),
+                        num_examples=L,
+                        rng=self.rng,
+                    )
+                    X_full[i] = X_row[0]
+                    X_ctx[i] = X_full[i, :m, :]
+                    y_ctx[i] = X_ctx[i, :, t]
+                    cfg_ctx[i] = _parent_config_categorical(
+                        X_ctx[i].reshape(m, N), parents_idx, K
+                    )
+                    cfg_test[i] = int(
+                        _parent_config_categorical(
+                            X_full[i, L - 1 : L, :].reshape(1, N),
+                            parents_idx,
+                            K,
+                        )[0]
+                    )
+
+            # -1 mask sentinel requires signed dtype (X_full may be uint8).
+            X_mask = X_full.astype(np.int64, copy=True)
             if t + 1 < N:
-                X_mask[:, : L - 1, t + 1 :] = 0
-            X_mask[:, L - 1, t:] = 0
+                X_mask[:, : L - 1, t + 1 :] = -1
+            X_mask[:, L - 1, t:] = -1
             tgt = np.full((B, L, 1), t, dtype=np.int64)
-            X_out = np.concatenate([X_mask.astype(np.int64), tgt], axis=2)
+            X_out = np.concatenate([X_mask, tgt], axis=2)
 
             batch: Dict[str, Any] = {
                 "x": torch.as_tensor(X_out, dtype=dtype, device=device),

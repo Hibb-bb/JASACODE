@@ -53,11 +53,11 @@ python3 plot_loss.py --metrics_csv runs/tree5/seed_1234/50to500/20000/logs/versi
 - Training script with fixed sequence length
 
 ```bash
-  python train.py \
-    --batch-size 16 \
-    --context-len 100 \
+  python3 train.py \
+    --batch-size 64 \
+    --context-len 500 \
     --graph chain \
-    --train-step 10000 \
+    --train-step 1000 \
     --init-lr 1e-4 \
     --train-size 20000 \
     --test-size 5000 \
@@ -65,7 +65,7 @@ python3 plot_loss.py --metrics_csv runs/tree5/seed_1234/50to500/20000/logs/versi
     --warmup-steps 2000 \
     --min-lr 1e-6 \
     --init-lr 3e-4 \
-    --seed 1111
+    --seed 1234
 ```
 
 ### Custom graph structure
@@ -106,6 +106,8 @@ def get_sprinkler(seed=2000):
 Next, modify `train.py` so it imports `get_sprinkler` from `data/graphs.py`.
 
 ```
+
+
 # salloc -p debug_a100 -t 02:00:00 --gres=gpu:1
 # srun --pty bash -l
 
@@ -115,4 +117,43 @@ Next, modify `train.py` so it imports `get_sprinkler` from `data/graphs.py`.
 ```
 
 
+
+
 ```uv run python train_sachs.py --train-step 50000 --batch-size 16 --context-len 200```
+
+
+uv run python train_sachs.py --train-step 100000 --batch-size 32 --context-len 1000 --seed 1111 --num-layers 4
+
+
+salloc --account=p32593 --job-name=ok --nodes=1 --partition=gengpu --gres=gpu:a100:1 --ntasks-per-node=1 --cpus-per-task=16 --mem=80G --time=01:00:00
+
+
+p32234
+
+srun --jobid=6375747 --pty bash -l
+
+
+python3 train.py \
+  --batch-size 64 \
+  --context-len 500 \
+  --graph chain \
+  --train-step 1000 \
+  --init-lr 1e-4 \
+  --train-size 20000 \
+  --test-size 5000 \
+  --output-dir runs/ \
+  --warmup-steps 2000 \
+  --min-lr 1e-6 \
+  --init-lr 3e-4 \
+  --seed 1234
+
+
+
+uv run python train_sachs.py --train-step 50000 --batch-size 32 --context-len 1000 --seed 1111 --num-layers 12 --train-size 1
+
+uv run python3 eval_sachs_real.py \
+--ckpt-path "/projects/b1094/ywl7940/JASACODE/outputs/sachs/seed_1111/500/L12/1/logs/version_0/checkpoints/best.ckpt" \
+--disc-data-dir Sachs/disc_data \
+--output-dir runs/sachs_real_eval_seed1111 \
+--seed 1111
+

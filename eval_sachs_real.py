@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from data import get_sachs_categorical, compile_template_from_categorical
+from data import get_sachs, compile_template_from_categorical
 from utils import ICLLightningModuleCategorical, EvalSpec
 from utils.sachs_real_eval import (
     encode_disc_df_to_int,
@@ -72,13 +72,9 @@ def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
-    # 1) Template: Sachs categorical structure (cardinality 3) with ONLY structure.
-    print("Loading Sachs categorical template (structure only)...")
-    bn = get_sachs_categorical(
-        seed=2000,
-        set_random_cpts=False,
-        num_classes=3,
-    )
+    # 1) Template: hard-coded Sachs DAG (K=3); compile uses structure only (CPTs in bn unused here).
+    print("Loading Sachs categorical template (hard-coded DAG, K=3)...")
+    bn = get_sachs(seed=2000)
     template = compile_template_from_categorical(bn)
     node_order: List[str] = list(template.topo_nodes)
     print(f"Template nodes (topological order): {node_order}")
@@ -113,6 +109,20 @@ def main() -> None:
 
         df_raw = pd.read_csv(csv_path)
 
+        # Some discretized Sachs CSVs use slightly different capitalization (e.g. "Raf" vs "RAF").
+        # Align columns to the template node names using a case-insensitive match when needed.
+        if any(c not in df_raw.columns for c in node_order):
+            lower_to_actual = {c.lower(): c for c in df_raw.columns}
+            rename_map = {}
+            for expected in node_order:
+                if expected in df_raw.columns:
+                    continue
+                actual = lower_to_actual.get(expected.lower())
+                if actual is not None:
+                    rename_map[actual] = expected
+            if rename_map:
+                df_raw = df_raw.rename(columns=rename_map)
+
         # Reorder columns to match template topo order.
         missing = [c for c in node_order if c not in df_raw.columns]
         if missing:
@@ -128,11 +138,7 @@ def main() -> None:
 
         # Build empirical CPTs from the full treatment dataset.
         print("Computing empirical CPTs from real data...")
-        cpt_emp_list = empirical_cpt_from_data(
-            X_data,
-            template,
-            alpha=0.0,
-        )
+        cpt_emp_list = empirical_cpt_from_data(X_data, template)
 
         # Prepare EvalSpec for this treatment.
         out_csv = os.path.join(
@@ -145,7 +151,7 @@ def main() -> None:
             seed=args.seed,
             output_csv=out_csv,
             device=device,
-            infer_batch_size=8,
+            infer_batch_size=16,
         )
 
         print("Running real-data evaluation episodes...")

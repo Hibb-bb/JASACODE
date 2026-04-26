@@ -30,6 +30,27 @@ class EvalSpec:
     infer_batch_size: int = 512
 
 
+def _compute_prefix_cfg_binary(rows: np.ndarray) -> np.ndarray:
+    """Config id for prefix (x_0..x_{t-1}); rows (B, nprev), binary digits."""
+    nprev = int(rows.shape[1])
+    # Masked values use -1 sentinel; treat as 0 for config id computation.
+    if rows.size:
+        rows = np.where(rows < 0, 0, rows)
+    weights = (1 << np.arange(nprev, dtype=np.int64))[None, :]
+    return (rows.astype(np.int64) * weights).sum(axis=1)
+
+
+def _compute_prefix_cfg_categorical_rows(rows: np.ndarray, K: int) -> np.ndarray:
+    """Config id = sum_j x_j * K^j; rows (B, nprev). nprev==0 -> zeros(B)."""
+    if rows.shape[1] == 0:
+        return np.zeros((rows.shape[0],), dtype=np.int64)
+    # Masked values use -1 sentinel; treat as 0 for config id computation.
+    if rows.size:
+        rows = np.where(rows < 0, 0, rows)
+    powers = np.power(K, np.arange(rows.shape[1], dtype=np.int64))
+    return (rows.astype(np.int64) * powers[None, :]).sum(axis=1)
+
+
 def _compute_parent_cfg(
     test_prefix: np.ndarray,          # shape (B, N), values in {0,1}
     parent_idx: np.ndarray,           # shape (k,)
@@ -42,8 +63,26 @@ def _compute_parent_cfg(
     if k == 0:
         return np.zeros((test_prefix.shape[0],), dtype=np.int64)
     pv = test_prefix[:, parent_idx].astype(np.int64)  # (B,k)
+    # Masked values use -1 sentinel; treat as 0 for config id computation.
+    if pv.size:
+        pv = np.where(pv < 0, 0, pv)
     weights = (1 << np.arange(k, dtype=np.int64))[None, :]  # (1,k)
     return (pv * weights).sum(axis=1)
+
+
+def _icl_masked_x(X_full: np.ndarray, target_index: int) -> np.ndarray:
+    """Same node masking as the model ICL input (without the appended target_index channel).
+
+    Context rows: zero columns t+1..N-1. Test row: zero columns t..N-1.
+    """
+    B, L, N = X_full.shape
+    t = int(target_index)
+    # X_full is often uint8; -1 mask sentinel requires signed dtype.
+    X_mask = X_full.astype(np.int64, copy=True)
+    if t + 1 < N:
+        X_mask[:, : L - 1, t + 1 :] = -1
+    X_mask[:, L - 1, t:] = -1
+    return X_mask
 
 
 def _build_icl_x(
@@ -58,58 +97,91 @@ def _build_icl_x(
     """
     B, L, N = X_full.shape
     t = int(target_index)
-    X_mask = X_full.copy()
-
-    # context rows: mask future nodes only
-    if t + 1 < N:
-        X_mask[:, : L - 1, t + 1 :] = 0
-
-    # test row: mask target and future
-    X_mask[:, L - 1, t:] = 0
-
+    X_mask = _icl_masked_x(X_full, target_index)
     tgt_feat = np.full((B, L, 1), t, dtype=np.int64)
-    X_out = np.concatenate([X_mask.astype(np.int64), tgt_feat], axis=2)
+    X_out = np.concatenate([X_mask, tgt_feat], axis=2)
     return X_out  # (B, L, N+1)
 
 
-def _naive_marginal_from_context(
-    X_full: np.ndarray,   # (B, L, N)
-    target_index: int,    # t
-    *,
-    alpha: float = 0.0,   # Beta prior
-    beta: float = 0.0,
+def _tv_abs_binary_safe(p_hat: np.ndarray, p_true: np.ndarray) -> np.ndarray:
+    """|p_hat - p_true|; non-finite -> 1.0 (max TV for a Bernoulli parameter)."""
+    tv = np.abs(p_hat - p_true)
+    return np.where(np.isfinite(tv), tv, 1.0)
+
+
+def _tv_categorical_safe(p: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """0.5 * sum |p - q|; non-finite -> 1.0."""
+    tv = 0.5 * np.abs(p - q).sum(axis=1)
+    return np.where(np.isfinite(tv), tv, 1.0)
+
+
+def _naive_graph_agnostic_from_context_bn(
+    X_full: np.ndarray,
+    target_index: int,
 ) -> np.ndarray:
     """
-    Naive baseline: estimate P(X_t=1) from context examples only, ignoring parents/graph.
-    Uses Beta(alpha,beta) smoothing.
-    Returns (B,) float64.
+    Graph-agnostic naive: MLE P(X_t=1 | x_0..x_{t-1}) from masked context (ignores true DAG).
+    t==0 -> marginal over context. Zero matching context rows -> nan.
     """
     B, L, N = X_full.shape
     m = L - 1
     t = int(target_index)
-    ctx = X_full[:, :m, t].astype(np.float64)  # (B,m)
-    s1 = ctx.sum(axis=1)                       # (B,)
-    return (alpha + s1) / (alpha + beta + m)
+    X_mask = _icl_masked_x(X_full, target_index)
+    X_ctx = X_mask[:, :m, :]
+    y_ctx = X_ctx[:, :, t].astype(np.int64)
+    nprev = t
+    Kconfigs = 1 << nprev
+    if nprev == 0:
+        cfg_ctx = np.zeros((B, m), dtype=np.int64)
+        cfg_test = np.zeros((B,), dtype=np.int64)
+    else:
+        flat = X_ctx[:, :, :nprev].reshape(B * m, nprev)
+        cfg_ctx = _compute_prefix_cfg_binary(flat).reshape(B, m)
+        cfg_test = _compute_prefix_cfg_binary(X_mask[:, L - 1, :nprev])
+
+    p_hat = np.empty((B,), dtype=np.float64)
+    for i in range(B):
+        tot = np.bincount(cfg_ctx[i], minlength=Kconfigs).astype(np.float64)
+        one = np.bincount(cfg_ctx[i], weights=y_ctx[i].astype(np.float64), minlength=Kconfigs)
+        c = int(cfg_test[i])
+        den = tot[c]
+        p_hat[i] = one[c] / den if den > 0 else np.nan
+    return p_hat
+
+
+def _naive_context_tot_at_prefix_bn(X_full: np.ndarray, target_index: int) -> np.ndarray:
+    """Context rows whose masked prefix matches masked test prefix (graph-agnostic naive). (B,) int64."""
+    B, L, N = X_full.shape
+    m = L - 1
+    t = int(target_index)
+    nprev = t
+    Kconfigs = 1 << nprev
+    X_mask = _icl_masked_x(X_full, target_index)
+    X_ctx = X_mask[:, :m, :]
+    if nprev == 0:
+        cfg_ctx = np.zeros((B, m), dtype=np.int64)
+        cfg_test = np.zeros((B,), dtype=np.int64)
+    else:
+        flat = X_ctx[:, :, :nprev].reshape(B * m, nprev)
+        cfg_ctx = _compute_prefix_cfg_binary(flat).reshape(B, m)
+        cfg_test = _compute_prefix_cfg_binary(X_mask[:, L - 1, :nprev])
+
+    out = np.empty((B,), dtype=np.int64)
+    for i in range(B):
+        tot = np.bincount(cfg_ctx[i], minlength=Kconfigs).astype(np.int64)
+        out[i] = tot[int(cfg_test[i])]
+    return out
 
 
 def _bayes_cpt_from_context(
     X_full: np.ndarray,        # (B, L, N)
     template: BNTemplate,
     target_index: int,         # t
-    *,
-    alpha: float = 0.0,        # Beta prior for each CPT entry
-    beta: float = 0.0,
 ) -> np.ndarray:
     """
-    Bayesian baseline with known DAG structure:
-      - For each episode i, estimate CPT for node t from context examples:
-            P(X_t=1 | cfg) = (alpha + count_1(cfg)) / (alpha+beta + count_total(cfg))
-      - Then evaluate at cfg_test computed from test token parent values.
-    Returns (B,) float64.
-
-    Notes:
-    - This is per-episode inference: each batch element has its own estimated CPT from its own ICL context.
-    - Parent configuration encoding matches _compute_parent_cfg.
+    Bayesian CPT baseline from ICL context with the same masking as the model.
+    MLE: P(X_t=1|cfg) = count_1(cfg)/count(cfg); missing cfg or zero count -> nan.
+    cfg on context rows and test row from masked tensors.
     """
     B, L, N = X_full.shape
     m = L - 1
@@ -118,32 +190,87 @@ def _bayes_cpt_from_context(
     k = int(parents_idx.size)
     K = 1 << k
 
-    # Context tensors
-    X_ctx = X_full[:, :m, :]              # (B,m,N)
-    y_ctx = X_ctx[:, :, t].astype(np.int64)  # (B,m)
+    X_mask = _icl_masked_x(X_full, target_index)
+    X_ctx = X_mask[:, :m, :]
+    y_ctx = X_ctx[:, :, t].astype(np.int64)
 
-    # For cfg we need (B,m) of parent-config ids
     if k == 0:
         cfg_ctx = np.zeros((B, m), dtype=np.int64)
         cfg_test = np.zeros((B,), dtype=np.int64)
     else:
-        # compute cfg per row by flattening and reshaping
         cfg_ctx = _compute_parent_cfg(
             X_ctx.reshape(B * m, N), parents_idx
         ).reshape(B, m)
-        cfg_test = _compute_parent_cfg(
-            X_full[:, L - 1, :], parents_idx
-        )  # (B,)
+        cfg_test = _compute_parent_cfg(X_mask[:, L - 1, :], parents_idx)
 
-    # Estimate per-episode CPT entry for cfg_test
     p_hat = np.empty((B,), dtype=np.float64)
     for i in range(B):
-        # counts per cfg
-        tot = np.bincount(cfg_ctx[i], minlength=K).astype(np.float64)  # (K,)
-        one = np.bincount(cfg_ctx[i], weights=y_ctx[i], minlength=K).astype(np.float64)  # (K,)
+        tot = np.bincount(cfg_ctx[i], minlength=K).astype(np.float64)
+        one = np.bincount(cfg_ctx[i], weights=y_ctx[i], minlength=K).astype(np.float64)
         cfg = int(cfg_test[i])
-        p_hat[i] = (alpha + one[cfg]) / (alpha + beta + tot[cfg])
+        den = tot[cfg]
+        p_hat[i] = one[cfg] / den if den > 0 else np.nan
     return p_hat
+
+
+def _bayes_context_tot_at_test_cfg_bn(
+    X_full: np.ndarray,
+    template: BNTemplate,
+    target_index: int,
+) -> np.ndarray:
+    """Count of masked-context rows whose parent cfg equals masked-test cfg. (B,) int64."""
+    B, L, N = X_full.shape
+    m = L - 1
+    t = int(target_index)
+    parents_idx = template.parent_idx[t]
+    k = int(parents_idx.size)
+    K = 1 << k
+
+    X_mask = _icl_masked_x(X_full, target_index)
+    X_ctx = X_mask[:, :m, :]
+    if k == 0:
+        cfg_ctx = np.zeros((B, m), dtype=np.int64)
+        cfg_test = np.zeros((B,), dtype=np.int64)
+    else:
+        cfg_ctx = _compute_parent_cfg(
+            X_ctx.reshape(B * m, N), parents_idx
+        ).reshape(B, m)
+        cfg_test = _compute_parent_cfg(X_mask[:, L - 1, :], parents_idx)
+
+    out = np.empty((B,), dtype=np.int64)
+    for i in range(B):
+        tot = np.bincount(cfg_ctx[i], minlength=K).astype(np.int64)
+        out[i] = tot[int(cfg_test[i])]
+    return out
+
+
+def _bayes_context_tot_at_test_cfg_cat(
+    X_full: np.ndarray,
+    template: CategoricalTemplate,
+    target_index: int,
+) -> np.ndarray:
+    """Same as _bayes_context_tot_at_test_cfg_bn for categorical parent configs (masked)."""
+    B, L, N = X_full.shape
+    m = L - 1
+    t = int(target_index)
+    K = template.cardinality
+    parents_idx = template.parent_idx[t]
+    k = int(parents_idx.size)
+    num_configs = K ** k
+
+    X_mask = _icl_masked_x(X_full, target_index)
+    X_ctx = X_mask[:, :m, :]
+    X_ctx_flat = X_ctx.reshape(B * m, N)
+    cfg_ctx = _compute_parent_cfg_categorical(
+        X_ctx_flat, parents_idx, K
+    ).reshape(B, m)
+    cfg_test = _compute_parent_cfg_categorical(X_mask[:, L - 1, :], parents_idx, K)
+
+    out = np.empty((B,), dtype=np.int64)
+    for i in range(B):
+        tot = np.bincount(cfg_ctx[i], minlength=num_configs).astype(np.int64)
+        out[i] = tot[int(cfg_test[i])]
+    return out
 
 
 def _compute_parent_cfg_categorical(
@@ -160,32 +287,86 @@ def _compute_parent_cfg_categorical(
     return (pv * powers[None, :]).sum(axis=1)
 
 
-def _naive_marginal_from_context_categorical(
+def _naive_graph_agnostic_from_context_categorical(
     X_full: np.ndarray,
+    template: CategoricalTemplate,
     target_index: int,
-    K: int,
-    *,
-    alpha: float = 0.5,
 ) -> np.ndarray:
-    """Naive baseline: P(X_t=v) from context counts + Dirichlet(alpha). Returns (B, K)."""
+    """
+    Graph-agnostic naive: MLE P(X_t | x_0..x_{t-1}) from masked context (full prefix, not DAG).
+    t==0 -> marginal histogram / m. Zero matching count -> nan row. (B, K).
+    """
     B, L, N = X_full.shape
     m = L - 1
     t = int(target_index)
-    y_ctx = X_full[:, :m, t].astype(np.int64)
-    counts = np.zeros((B, K), dtype=np.float64)
-    for v in range(K):
-        counts[:, v] = (y_ctx == v).sum(axis=1)
-    return (alpha + counts) / (alpha * K + m)
+    K = template.cardinality
+    X_mask = _icl_masked_x(X_full, target_index)
+    X_ctx = X_mask[:, :m, :]
+    y_ctx = X_ctx[:, :, t].astype(np.int64)
+    nprev = t
+    num_configs = int(K**nprev) if nprev > 0 else 1
+
+    if nprev == 0:
+        cfg_ctx = np.zeros((B, m), dtype=np.int64)
+        cfg_test = np.zeros((B,), dtype=np.int64)
+    else:
+        flat = X_ctx[:, :, :nprev].reshape(B * m, nprev)
+        cfg_ctx = _compute_prefix_cfg_categorical_rows(flat, K).reshape(B, m)
+        cfg_test = _compute_prefix_cfg_categorical_rows(X_mask[:, L - 1, :nprev], K)
+
+    out = np.empty((B, K), dtype=np.float64)
+    for i in range(B):
+        tot = np.bincount(cfg_ctx[i], minlength=num_configs).astype(np.float64)
+        counts = np.zeros((num_configs, K), dtype=np.float64)
+        for v in range(K):
+            counts[:, v] = np.bincount(
+                cfg_ctx[i],
+                weights=(y_ctx[i] == v).astype(np.float64),
+                minlength=num_configs,
+            )
+        c = int(cfg_test[i])
+        if tot[c] > 0:
+            out[i] = counts[c, :] / tot[c]
+        else:
+            out[i] = np.nan
+    return out
+
+
+def _naive_context_tot_at_prefix_cat(
+    X_full: np.ndarray,
+    template: CategoricalTemplate,
+    target_index: int,
+) -> np.ndarray:
+    """Context rows matching masked test prefix cfg (graph-agnostic naive). (B,) int64."""
+    B, L, N = X_full.shape
+    m = L - 1
+    t = int(target_index)
+    K = template.cardinality
+    nprev = t
+    num_configs = int(K**nprev) if nprev > 0 else 1
+    X_mask = _icl_masked_x(X_full, target_index)
+    X_ctx = X_mask[:, :m, :]
+    if nprev == 0:
+        cfg_ctx = np.zeros((B, m), dtype=np.int64)
+        cfg_test = np.zeros((B,), dtype=np.int64)
+    else:
+        flat = X_ctx[:, :, :nprev].reshape(B * m, nprev)
+        cfg_ctx = _compute_prefix_cfg_categorical_rows(flat, K).reshape(B, m)
+        cfg_test = _compute_prefix_cfg_categorical_rows(X_mask[:, L - 1, :nprev], K)
+
+    out = np.empty((B,), dtype=np.int64)
+    for i in range(B):
+        tot = np.bincount(cfg_ctx[i], minlength=num_configs).astype(np.int64)
+        out[i] = tot[int(cfg_test[i])]
+    return out
 
 
 def _bayes_cpt_from_context_categorical(
     X_full: np.ndarray,
     template: CategoricalTemplate,
     target_index: int,
-    *,
-    alpha: float = 0.5,
 ) -> np.ndarray:
-    """Bayesian CPT from context; return distribution at test parent config. (B, K)."""
+    """Bayesian CPT from masked context; MLE at masked-test cfg. Zero count -> nan row. (B, K)."""
     B, L, N = X_full.shape
     m = L - 1
     t = int(target_index)
@@ -194,13 +375,14 @@ def _bayes_cpt_from_context_categorical(
     k = int(parents_idx.size)
     num_configs = K ** k
 
-    X_ctx = X_full[:, :m, :]
+    X_mask = _icl_masked_x(X_full, target_index)
+    X_ctx = X_mask[:, :m, :]
     y_ctx = X_ctx[:, :, t].astype(np.int64)
     X_ctx_flat = X_ctx.reshape(B * m, N)
     cfg_ctx = _compute_parent_cfg_categorical(
         X_ctx_flat, parents_idx, K
     ).reshape(B, m)
-    cfg_test = _compute_parent_cfg_categorical(X_full[:, L - 1, :], parents_idx, K)
+    cfg_test = _compute_parent_cfg_categorical(X_mask[:, L - 1, :], parents_idx, K)
 
     out = np.empty((B, K), dtype=np.float64)
     for i in range(B):
@@ -214,9 +396,9 @@ def _bayes_cpt_from_context_categorical(
             )
         cfg = int(cfg_test[i])
         if tot[cfg] > 0:
-            out[i] = (alpha + counts[cfg, :]) / (alpha * K + tot[cfg])
+            out[i] = counts[cfg, :] / tot[cfg]
         else:
-            out[i] = (alpha + counts.sum(axis=0)) / (alpha * K + counts.sum())
+            out[i] = np.nan
     return out
 
 
@@ -230,13 +412,14 @@ def evaluate_tv_over_context_categorical_with_baselines(
     template: CategoricalTemplate,
     cpt_list_fixed: List[np.ndarray],
     spec: EvalSpec,
-    *,
-    naive_alpha: float = 0.5,
-    bayes_alpha: float = 0.5,
 ) -> None:
     """
     Evaluate 3-class Sachs (or any categorical BN). TV = 0.5 * sum_c |p_c - q_c|.
     Writes CSV with tv_model, tv_naive, tv_bayes per episode.
+
+    Naive: graph-agnostic MLE P(X_t | x_0..x_{t-1}) from masked context (ignores DAG).
+    Bayes: MLE using true parents only. No smoothing; non-finite TV -> 1.0.
+    If m=0, tv_naive is 1.0. If no context row matches the relevant cfg, tv_naive/tv_bayes -> 1.0.
     """
     N = template.num_nodes
     K = template.cardinality
@@ -296,16 +479,25 @@ def evaluate_tv_over_context_categorical_with_baselines(
                         logits = model(x_tensor)
                         p_hat_model = torch.softmax(logits, dim=1).detach().cpu().numpy().astype(np.float64)
 
-                    p_hat_naive = _naive_marginal_from_context_categorical(
-                        X_full, t, K, alpha=naive_alpha
+                    p_hat_naive = _naive_graph_agnostic_from_context_categorical(
+                        X_full, template, t,
                     )
                     p_hat_bayes = _bayes_cpt_from_context_categorical(
-                        X_full, template, t, alpha=bayes_alpha
+                        X_full, template, t,
                     )
 
-                    tv_model = _tv_categorical(p_hat_model, p_true)
-                    tv_naive = _tv_categorical(p_hat_naive, p_true)
-                    tv_bayes = _tv_categorical(p_hat_bayes, p_true)
+                    tv_model = _tv_categorical_safe(p_hat_model, p_true)
+                    tv_naive = _tv_categorical_safe(p_hat_naive, p_true)
+                    tv_bayes = _tv_categorical_safe(p_hat_bayes, p_true)
+
+                    if m == 0:
+                        tv_naive = np.ones_like(tv_naive)
+                    naive_tot = _naive_context_tot_at_prefix_cat(X_full, template, t)
+                    tv_naive = np.where(naive_tot == 0, 1.0, tv_naive)
+                    bayes_tot = _bayes_context_tot_at_test_cfg_cat(
+                        X_full, template, t,
+                    )
+                    tv_bayes = np.where(bayes_tot == 0, 1.0, tv_bayes)
 
                     for bi in range(B):
                         writer.writerow({
@@ -328,18 +520,10 @@ def evaluate_tv_over_context_with_baselines(
     template: BNTemplate,
     p1_list_fixed: List[np.ndarray],
     spec: EvalSpec,
-    *,
-    naive_alpha: float = 0.5,
-    naive_beta: float = 0.5,
-    bayes_alpha: float = 0.5,
-    bayes_beta: float = 0.5,
 ) -> None:
     """
-    Like evaluate_tv_over_context, but also computes:
-      (1) naive marginal baseline from ICL context
-      (2) Bayesian CPT-estimation baseline (known DAG)
-
-    Writes a CSV with per-episode predictions and TV distances for all methods.
+    Naive: graph-agnostic P(X_t|x_0..x_{t-1}) from masked context. Bayes: true parents only.
+    No smoothing; non-finite TV is 1.0. If m=0, tv_naive is 1.0. Zero cfg match -> TV 1.0.
     """
     # Basic checks - support multiple graphs for testing
     N = template.num_nodes
@@ -420,19 +604,22 @@ def evaluate_tv_over_context_with_baselines(
                     with torch.no_grad():
                         logits = model(x_tensor)  # expected (B,)
                         p_hat_model = torch.sigmoid(logits).detach().cpu().numpy().astype(np.float64)
-                    tv_model = np.abs(p_hat_model - p_true)
+                    tv_model = _tv_abs_binary_safe(p_hat_model, p_true)
 
-                    # ===== Baseline (1): naive marginal =====
-                    p_hat_naive = _naive_marginal_from_context(
-                        X_full, t, alpha=naive_alpha, beta=naive_beta
-                    ).astype(np.float64)
-                    tv_naive = np.abs(p_hat_naive - p_true)
+                    # ===== Baseline (1): graph-agnostic naive (prefix x_0..x_{t-1}) =====
+                    p_hat_naive = _naive_graph_agnostic_from_context_bn(X_full, t).astype(np.float64)
+                    tv_naive = _tv_abs_binary_safe(p_hat_naive, p_true)
 
-                    # ===== Baseline (2): Bayesian CPT from context =====
-                    p_hat_bayes = _bayes_cpt_from_context(
-                        X_full, template, t, alpha=bayes_alpha, beta=bayes_beta
-                    ).astype(np.float64)
-                    tv_bayes = np.abs(p_hat_bayes - p_true)
+                    # ===== Baseline (2): Bayes CPT (true parents only) =====
+                    p_hat_bayes = _bayes_cpt_from_context(X_full, template, t).astype(np.float64)
+                    tv_bayes = _tv_abs_binary_safe(p_hat_bayes, p_true)
+
+                    if m == 0:
+                        tv_naive = np.ones_like(tv_naive)
+                    naive_tot = _naive_context_tot_at_prefix_bn(X_full, t)
+                    tv_naive = np.where(naive_tot == 0, 1.0, tv_naive)
+                    bayes_tot = _bayes_context_tot_at_test_cfg_bn(X_full, template, t)
+                    tv_bayes = np.where(bayes_tot == 0, 1.0, tv_bayes)
 
                     # Write per-episode rows
                     for i in range(B):

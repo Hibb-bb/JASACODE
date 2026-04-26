@@ -65,3 +65,35 @@ def init_graph_params_uniform(
         p1_list.append(p)
 
     return p1_list
+
+
+def init_graph_params_beta(
+    template: BNTemplate,
+    num_graphs: int,
+    alpha: float = 2.0,
+    seed: int | None = None,
+) -> List[np.ndarray]:
+    """
+    Returns per-node CPT tables for many graphs with i.i.d. Beta(alpha, alpha) entries.
+
+    Intuition:
+      - alpha > 1 concentrates around 0.5 (\"flatter\" / less extreme CPTs)
+      - alpha = 1 reduces to Uniform(0,1)
+      - alpha < 1 pushes mass toward 0 and 1 (\"peaky\" / more extreme CPTs)
+
+    Output schema matches init_graph_params_uniform:
+        p1_list[i] has shape (G, 2^k_i), where k_i is in-degree of node i.
+    """
+    if alpha <= 0:
+        raise BNError(f"alpha must be > 0, got {alpha}")
+    rng = np.random.default_rng(seed)
+    G = int(num_graphs)
+
+    p1_list: List[np.ndarray] = []
+    for parents in template.parent_idx:
+        k = int(parents.size)
+        K = 1 << k
+        p = rng.beta(alpha, alpha, size=(G, K)).astype(np.float64)
+        p1_list.append(p)
+
+    return p1_list
