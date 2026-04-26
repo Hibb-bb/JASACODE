@@ -9,27 +9,22 @@ uv sync
 
 ## Usage
 
-### Standard Training (Fig. 2 to Fig. 4)
+### Single Structure Training
 
 
-- 7 Node configuration <br>
+- Single structure script <br>
 ```bash
-sh 7-node.sh
+sh single-structure.sh
 ```
 
-- 5 Node configuration <br>
+- Prediction task script <br>
 ```bash
-sh 5-node.sh
+sh pred.sh
 ```
-results will be stored in the `runs/` folder for each random seed, `quick_plot.py` will aggregate experiments across seeds.
+results will be stored in the `runs/` folder for each random seed, `quick_plot.py` will aggregate experiments across seeds (see below).
 For a single run, 10k steps training takes 5 minutes to finish. The overall process takes roughly 10 minutes including evaluation.
 
 All simulations are done on a single NVIDIA-A100 GPU.
-
-- Loss curve visualization example <br>
-```bash
-python3 plot_loss.py --metrics_csv runs/tree5/seed_1234/50to500/20000/logs/version_0/metrics.csv --output ./loss.png
-```
 
 - Training script with dynamic sequence length
 
@@ -116,44 +111,11 @@ Next, modify `train.py` so it imports `get_sprinkler` from `data/graphs.py`.
 # salloc -p debug -t 02:00:00
 ```
 
+## Plotting
 
-
-
-```uv run python train_sachs.py --train-step 50000 --batch-size 16 --context-len 200```
-
-
-uv run python train_sachs.py --train-step 100000 --batch-size 32 --context-len 1000 --seed 1111 --num-layers 4
-
-
-salloc --account=p32593 --job-name=ok --nodes=1 --partition=gengpu --gres=gpu:a100:1 --ntasks-per-node=1 --cpus-per-task=16 --mem=80G --time=01:00:00
-
-
-p32234
-
-srun --jobid=6375747 --pty bash -l
-
-
-python3 train.py \
-  --batch-size 64 \
-  --context-len 500 \
-  --graph chain \
-  --train-step 1000 \
-  --init-lr 1e-4 \
-  --train-size 20000 \
-  --test-size 5000 \
-  --output-dir runs/ \
-  --warmup-steps 2000 \
-  --min-lr 1e-6 \
-  --init-lr 3e-4 \
-  --seed 1234
-
-
-
-uv run python train_sachs.py --train-step 50000 --batch-size 32 --context-len 1000 --seed 1111 --num-layers 12 --train-size 1
-
-uv run python3 eval_sachs_real.py \
---ckpt-path "/projects/b1094/ywl7940/JASACODE/outputs/sachs/seed_1111/500/L12/1/logs/version_0/checkpoints/best.ckpt" \
---disc-data-dir Sachs/disc_data \
---output-dir runs/sachs_real_eval_seed1111 \
---seed 1111
-
+| File | Use |
+|------|-----|
+| `quick_plot.py` | Single structure Mean ± std over five seeds from eval CSVs → figure under `imgs/`. |
+| `quick_plot_sachs.py` | Same style for real-Sachs eval outputs (e.g. under `runs/sachs_real_eval/…`). |
+| `plot_loss.py` | Loss and TV from Lightning `metrics.csv`. |
+| `plot_loss_runs.sh` | Calls `plot_loss.py` for tree / chain / general paths aligned with `pred.sh` defaults. |
