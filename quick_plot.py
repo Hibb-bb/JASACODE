@@ -35,9 +35,6 @@ plt.rcParams.update({
 
 
 SEEDS = [1111, 2222, 3333, 4444, 5555]
-
-# /projects/b1094/ywl7940/JASACODE/runs/chain5/seed_1111/500/L2/20000_eval_tv.csv
-
 rows = []
 for seed in SEEDS:
     base_dir = Path(f"./runs/{args.graph}/seed_{seed}/{args.context}") 
