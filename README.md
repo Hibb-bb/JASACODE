@@ -7,7 +7,7 @@ source .venv/bin/activate
 uv sync
 ```
 
-## Usage
+## Experiments
 
 ### Single Structure Training
 
@@ -21,6 +21,12 @@ sh single-structure.sh
 ```bash
 sh pred.sh
 ```
+
+- Sachs task script <br>
+```bash
+sh run_sachs.sh
+```
+
 results will be stored in the `runs/` folder for each random seed, `quick_plot.py` will aggregate experiments across seeds (see below).
 For a single run, 10k steps training takes 5 minutes to finish. The overall process takes roughly 10 minutes including evaluation.
 
@@ -62,6 +68,8 @@ All simulations are done on a single NVIDIA-A100 GPU.
     --init-lr 3e-4 \
     --seed 1234
 ```
+
+___
 
 ### Custom graph structure
 
