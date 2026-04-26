@@ -1,6 +1,7 @@
 # Transformers Simulate MLE for Sequence Generation in Bayesian Networks
 
 This repository contains code to reproduce the experiments in "Transformers Simulate MLE for Sequence Generation in Bayesian Networks". The results in the paper for single-structure training, prediction-task training, and Sachs protein signaling experiments can be reproduced via the following instructions.
+For mix-structure training (Random DAG), please refer to the `mixed-graph-structure` branch.
 
 ## Environment Setup
 
