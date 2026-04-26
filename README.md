@@ -15,15 +15,15 @@ uv sync
 
 ### Random DAG Training (Mixed-structure)
 
-Both experiments train one model per seed (parallel SLURM job array) on
+Both experiments train one model per seed on
 Erdős–Rényi DAGs with edge probability `p ∈ [0.7, 1.0]`, context length 500,
 50k steps. After each array completes, submit the matching plotting job.
 
 ### 7 nodes (3 seeds)
 
 ```bash
-sbatch train_random_dag_7node_dense_job.sh    # array 0–2, seeds {1111, 2222, 3333}
-sbatch plot_random_dag_7node_dense_job.sh     # after the array finishes
+sh train_random_dag_7node_dense_job.sh    # seeds {1111, 2222, 3333}
+sh plot_random_dag_7node_dense_job.sh     
 ```
 
 Outputs: `runs/best/random_dag_7nodes_p0.7to1.0_ctx500/`
@@ -31,8 +31,8 @@ Outputs: `runs/best/random_dag_7nodes_p0.7to1.0_ctx500/`
 ### 10 nodes (5 seeds)
 
 ```bash
-sbatch train_random_dag_10node_dense_job.sh         # array 0–4, seeds {1111…5555}
-sbatch plot_random_dag_10node_dense_5seeds_job.sh   # after the array finishes
+sh train_random_dag_10node_dense_job.sh         # {1111, 2222, 3333, 4444, 5555}
+sh plot_random_dag_10node_dense_5seeds_job.sh   
 ```
 
 Outputs: `runs/best/random_dag_10nodes_p0.7to1.0_ctx500/`
