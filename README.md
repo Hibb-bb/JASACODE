@@ -100,17 +100,6 @@ def get_sprinkler(seed=2000):
 
 Next, modify `train.py` so it imports `get_sprinkler` from `data/graphs.py`.
 
-```
-
-
-# salloc -p debug_a100 -t 02:00:00 --gres=gpu:1
-# srun --pty bash -l
-
-
-
-# salloc -p debug -t 02:00:00
-```
-
 ## Plotting
 
 | File | Use |
