@@ -1,10 +1,9 @@
-# JASA — Random DAG In-Context Learning
+# Transformers Simulate MLE for Sequence Generation in Bayesian Networks
 
-Train a non-causal GPT-2 on random DAG Bayesian networks and evaluate against
-naive / Bayesian baselines. This repo currently keeps only the 7-node and
-10-node dense random-DAG experiments.
+This repository contains code to reproduce the experiments in "Transformers Simulate MLE for Sequence Generation in Bayesian Networks". The results in the paper for mix-structure training (Random DAG) experiments can be reproduced via the following instructions.
+For single-structure training, prediction-task training, and Sachs protein signaling, please refer to the `main` branch.
 
-## Setup
+## Environment Setup
 
 ```bash
 uv venv .venv
@@ -12,7 +11,9 @@ source .venv/bin/activate
 uv sync
 ```
 
-## Experiments
+## Usage
+
+### Random DAG Training (Mixed-structure)
 
 Both experiments train one model per seed (parallel SLURM job array) on
 Erdős–Rényi DAGs with edge probability `p ∈ [0.7, 1.0]`, context length 500,
