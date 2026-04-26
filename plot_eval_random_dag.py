@@ -5,9 +5,9 @@ Plot TV distance vs num_examples for random-DAG training.
 Aggregates evaluation results across seeds (mean +/- std) and produces
 a 2x2 figure:
   (a) Transformer — per-node lines
-  (b) Averaged across nodes — all 3 methods
-  (c) Naive inference — per-node lines
-  (d) Bayesian — per-node lines
+  (b) Bayesian Inference — per-node lines
+  (c) Naive Inference — per-node lines
+  (d) Averaged across nodes — all 3 methods
 
 Supports two evaluation modes:
   --eval-type random_dags   (default) — aggregate over random DAG eval CSVs
@@ -179,8 +179,16 @@ def plot_panel(ax, agg_df, value_mean_col, value_std_col, title, show_legend=Tru
 plot_panel(axes[0, 0], agg, "tv_model_mean", "tv_model_std", "Transformer", show_legend=True)
 axes[0, 0].set_xlabel("")
 
-# (b) Averaged across nodes — all 3 methods
-ax_tr = axes[0, 1]
+# (b) Bayesian per-node
+plot_panel(axes[0, 1], agg, "tv_bayes_mean", "tv_bayes_std", "Bayesian Inference", show_legend=False)
+axes[0, 1].set_xlabel("")
+axes[0, 1].set_ylabel("")
+
+# (c) Naive per-node
+plot_panel(axes[1, 0], agg, "tv_naive_mean", "tv_naive_std", "Naive Inference", show_legend=False)
+
+# (d) Averaged across nodes — all 3 methods
+ax_tr = axes[1, 1]
 for col, label in [
     ("tv_model", "Transformer"),
     ("tv_naive", "Naive"),
@@ -194,17 +202,9 @@ for col, label in [
         yerr = None
     ax_tr.errorbar(x, y, yerr=yerr, marker="o", label=label, capsize=3, capthick=1)
 ax_tr.set_title("Averaged Across Nodes")
-ax_tr.set_xlabel("")
 ax_tr.set_ylabel("")
 ax_tr.grid(True, alpha=0.3)
 ax_tr.legend(fontsize=14, loc="upper right")
-
-# (c) Naive per-node
-plot_panel(axes[1, 0], agg, "tv_naive_mean", "tv_naive_std", "Naive Inference", show_legend=False)
-
-# (d) Bayesian per-node
-plot_panel(axes[1, 1], agg, "tv_bayes_mean", "tv_bayes_std", "Bayesian", show_legend=False)
-axes[1, 1].set_ylabel("")
 
 # Panel labels
 for ax, label in zip(axes.flat, ["(a)", "(b)", "(c)", "(d)"]):

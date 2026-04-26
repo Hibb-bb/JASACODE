@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --account=p32626
 #SBATCH --job-name=rdag_10n_dense
-#SBATCH --array=0-2
+#SBATCH --array=0-4
 #SBATCH --nodes=1
 #SBATCH --output=/projects/p32626/JASACODE/slurm_log/slurm_rdag10dense_%A_%a.out
 #SBATCH --error=/projects/p32626/JASACODE/slurm_log/slurm_rdag10dense_%A_%a.err
@@ -17,7 +17,7 @@
 cd /projects/p32626/JASACODE
 source .venv/bin/activate
 
-SEEDS=(1111 2222 3333)
+SEEDS=(1111 2222 3333 4444 5555)
 seed=${SEEDS[$SLURM_ARRAY_TASK_ID]}
 
 NUM_NODES=10
