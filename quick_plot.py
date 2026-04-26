@@ -40,7 +40,7 @@ SEEDS = [1111, 2222, 3333, 4444, 5555]
 
 rows = []
 for seed in SEEDS:
-    base_dir = Path(f"/projects/b1094/ywl7940/JASACODE/runs/{args.graph}/seed_{seed}/{args.context}") 
+    base_dir = Path(f"./runs/{args.graph}/seed_{seed}/{args.context}") 
     # New-style path with L<num_layers> subfolder
     new_path = base_dir / f"L{args.num_layers}" / f"{args.train_size}_eval_tv.csv"
     # Backwards-compatible fallback to old path without L<num_layers>
@@ -195,7 +195,7 @@ elif args.graph == "chain5":
 # title_str = args.graph.replace("_", " ").title()
 fig.suptitle(title_str, fontsize=font_size + 6, y=0.90)
 fig.tight_layout(rect=[0, 0, 1, 0.96])
-out_path = Path(f"/projects/b1094/ywl7940/JASACODE/imgs/{args.graph}_final.png")
+out_path = Path(f"./imgs/{args.graph}_final.png")
 out_path.parent.mkdir(parents=True, exist_ok=True)
 plt.savefig(out_path, dpi=600, bbox_inches="tight")
 plt.close()
