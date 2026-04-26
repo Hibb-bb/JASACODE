@@ -11,7 +11,7 @@ source .venv/bin/activate
 uv sync
 ```
 
-## Usage
+## Experiments
 
 ### Random DAG Training (Mixed-structure)
 
