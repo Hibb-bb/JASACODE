@@ -32,15 +32,16 @@ from data import (
     MultiGraphICLSequenceDataset,
     compile_template_from_structure,
     init_graph_params_beta,
+    init_graph_params_uniform,
 )
-from data.graphs import get_chain, get_general, get_tree
-from model import NonCausalGPT2BinaryHead
+from data.graphs import get_chain, get_general, get_tree, get_chain5, get_tree5, get_general7
+from model import build_binary_model
 from utils import EvalSpec, evaluate_tv_over_context_with_baselines
 
 # --- Fixed multi-seed training (edit here) ---
 TRAIN_SEEDS: List[int] = [1111, 2222, 3333, 4444, 5555]
 
-ALLOWED_GRAPHS = frozenset({"tree", "chain", "general"})
+ALLOWED_GRAPHS = frozenset({"tree", "chain", "general", "tree5", "chain5", "general7"})
 
 # Plot style (same spirit as quick_plot.py)
 FONT_SIZE = 20
@@ -59,6 +60,9 @@ GRAPH_SUPTITLE = {
     "tree": "Tree (7 Node)",
     "chain": "Chain (7 Node)",
     "general": "General (5 Node)",
+    "tree5": "Tree (5 Node)",
+    "chain5": "Chain (5 Node)",
+    "general7": "General (7 Node)",
 }
 
 
@@ -69,6 +73,12 @@ def get_graph_builder(name: str) -> Callable[[int], object]:
         return get_chain
     if name == "general":
         return get_general
+    if name == "tree5":
+        return get_tree5
+    if name == "chain5":
+        return get_chain5
+    if name == "general7":
+        return get_general7
     raise ValueError(f"graph must be one of {sorted(ALLOWED_GRAPHS)}, got {name!r}")
 
 
@@ -86,11 +96,12 @@ class ICLBinaryPredLightningModule(pl.LightningModule):
         max_steps: int = 70000,
         warmup_steps: int = 1000,
         min_lr: float = 0.0,
+        arch: str = "gpt2",
         **model_kwargs,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
-        self.model = NonCausalGPT2BinaryHead(input_dim=input_dim, **model_kwargs)
+        self.model = build_binary_model(arch, input_dim=input_dim, **model_kwargs)
         self.init_lr = init_lr
         self.weight_decay = weight_decay
         self.max_steps = max_steps
@@ -176,6 +187,22 @@ def get_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--min-lr", type=float, default=0.0)
     p.add_argument("--num-layers", type=int, default=4)
     p.add_argument("--output-dir", type=str, default="outputs_pred")
+    # Architecture (rebuttal experiments); same semantics as train.py
+    p.add_argument("--arch", type=str, default="gpt2", choices=["gpt2", "theory"])
+    p.add_argument("--n-head", type=int, default=None, help="default: 8 gpt2 / 1 theory")
+    p.add_argument("--n-embd", type=int, default=None, help="default: 256 gpt2 / (2N+1)*d theory")
+    p.add_argument("--ffn-mult", type=int, default=1)
+    p.add_argument("--dropout", type=float, default=None, help="default: 0.1 gpt2 / 0 theory")
+    p.add_argument("--layernorm", action="store_true")
+    p.add_argument(
+        "--cpt-prior",
+        type=str,
+        default="uniform",
+        choices=["uniform", "beta"],
+        help="uniform: CPT entries ~ U(0.1,0.9) as in the main experiments; beta: Beta(alpha,alpha).",
+    )
+    p.add_argument("--seeds", type=int, nargs="+", default=list(TRAIN_SEEDS))
+    p.add_argument("--no-plot", action="store_true", help="Skip the aggregate plot (e.g. one seed per SLURM task).")
     p.add_argument(
         "--plot-only",
         action="store_true",
@@ -190,6 +217,39 @@ def _context_dir_str(args: argparse.Namespace) -> str:
     return str(args.context_len)
 
 
+def _resolve_model_args(args: argparse.Namespace, num_nodes: int) -> None:
+    if args.n_head is None:
+        args.n_head = 8 if args.arch == "gpt2" else 1
+    if args.n_embd is None:
+        args.n_embd = 256 if args.arch == "gpt2" else (2 * num_nodes + 1) * 2
+    if args.dropout is None:
+        args.dropout = 0.1 if args.arch == "gpt2" else 0.0
+
+
+def _model_tag(args: argparse.Namespace) -> str:
+    if args.arch == "gpt2" and args.n_head == 8 and args.n_embd == 256:
+        return f"L{args.num_layers}"
+    tag = f"{args.arch}_L{args.num_layers}H{args.n_head}D{args.n_embd}"
+    if args.arch == "theory":
+        if args.ffn_mult != 1:
+            tag += f"F{args.ffn_mult}"
+        if args.layernorm:
+            tag += "LN"
+    return tag
+
+
+def _prior_tag(args: argparse.Namespace) -> str:
+    return "uniform" if args.cpt_prior == "uniform" else f"beta{args.cpt_beta_alpha:g}"
+
+
+def _init_params(args: argparse.Namespace, template, num_graphs: int, seed) -> list:
+    if args.cpt_prior == "uniform":
+        return init_graph_params_uniform(template, num_graphs=num_graphs, seed=seed)
+    return init_graph_params_beta(
+        template, num_graphs=num_graphs, alpha=float(args.cpt_beta_alpha), seed=seed
+    )
+
+
 def _run_dir(args: argparse.Namespace, seed: int) -> str:
     context_str = _context_dir_str(args)
     return os.path.join(
@@ -197,9 +257,9 @@ def _run_dir(args: argparse.Namespace, seed: int) -> str:
         args.graph,
         f"seed_{seed}",
         context_str,
-        f"L{args.num_layers}",
+        _model_tag(args),
         str(args.train_size),
-        f"beta{args.cpt_beta_alpha:g}",
+        _prior_tag(args),
         "pred_bce",
     )
 
@@ -213,15 +273,13 @@ def _evaluate_tv(
     bn = get_graph_builder(args.graph)(seed=seed)
     template = compile_template_from_structure(bn)
     param_rng = np.random.default_rng(seed + 947)
-    p1_list = init_graph_params_beta(
-        template, num_graphs=args.test_size, alpha=float(args.cpt_beta_alpha), seed=param_rng
-    )
+    p1_list = _init_params(args, template, args.test_size, param_rng)
     spec = EvalSpec(
         context_lens=[1, 2, 5, 10, 20, 50, 100, 200, 300, 400, 500],
         num_episodes=args.test_size,
         seed=seed,
         output_csv=run_dir + "_eval_tv.csv",
-        device="cuda",
+        device="cuda" if torch.cuda.is_available() else "cpu",
         infer_batch_size=16,
     )
     evaluate_tv_over_context_with_baselines(model, template, p1_list, spec)
@@ -242,11 +300,12 @@ def _train_one_seed(args: argparse.Namespace, seed: int) -> str:
 
     bn = get_graph_builder(args.graph)(seed=seed)
     template = compile_template_from_structure(bn)
+    _resolve_model_args(args, template.num_nodes)
+    print(f"Model: arch={args.arch} L={args.num_layers} H={args.n_head} D={args.n_embd} "
+          f"dropout={args.dropout} | prior={_prior_tag(args)}")
     pl.seed_everything(seed, workers=False)
 
-    p1_list_train = init_graph_params_beta(
-        template, num_graphs=args.train_size, alpha=float(args.cpt_beta_alpha), seed=seed
-    )
+    p1_list_train = _init_params(args, template, args.train_size, seed)
 
     if not args.dynamic_context:
         spec = ICLBatchSpec(
@@ -293,12 +352,15 @@ def _train_one_seed(args: argparse.Namespace, seed: int) -> str:
         max_steps=args.train_step,
         warmup_steps=args.warmup_steps,
         min_lr=args.min_lr,
-        n_embd=256,
+        arch=args.arch,
+        n_embd=args.n_embd,
         n_layer=args.num_layers,
-        n_head=8,
-        dropout=0.1,
+        n_head=args.n_head,
+        dropout=args.dropout,
         max_seq_len=max_seq_len,
         disable_causal=True,
+        ffn_mult=args.ffn_mult,
+        layernorm=args.layernorm,
     )
 
     run_dir = _run_dir(args, seed)
@@ -350,12 +412,7 @@ def _flatten_col(c: Any) -> str:
 
 
 def save_aggregate_eval_plot(
-    output_dir: str,
-    graph: str,
-    context_str: str,
-    num_layers: int,
-    train_size: int,
-    cpt_beta_alpha: float,
+    args: argparse.Namespace,
     seeds: List[int],
     out_path: Path,
 ) -> None:
@@ -363,18 +420,10 @@ def save_aggregate_eval_plot(
     Same layout as quick_plot.py: 2x2, mean ± std across seeds over episodes
     (groupby context_len, target_index then mean; then across seeds).
     """
+    graph = args.graph
     rows = []
     for seed in seeds:
-        run_dir = os.path.join(
-            output_dir,
-            graph,
-            f"seed_{seed}",
-            context_str,
-            f"L{num_layers}",
-            str(train_size),
-            f"beta{cpt_beta_alpha:g}",
-            "pred_bce",
-        )
+        run_dir = _run_dir(args, seed)
         file_path = Path(run_dir + "_eval_tv.csv")
         if not file_path.is_file():
             print(f"WARNING: {file_path} not found, skipping seed {seed}")
@@ -392,7 +441,7 @@ def save_aggregate_eval_plot(
 
     if not rows:
         raise FileNotFoundError(
-            f"No eval CSVs found under {output_dir}/{graph}/.../pred_bce for seeds={seeds}"
+            f"No eval CSVs found under {args.output_dir}/{graph}/.../pred_bce for seeds={seeds}"
         )
 
     wide_df = pd.concat(rows, ignore_index=True)
@@ -502,25 +551,21 @@ def main() -> None:
     if not args.dynamic_context and args.context_len < 1:
         raise ValueError("--context-len must be >= 1 unless --dynamic-context is set")
 
-    context_str = _context_dir_str(args)
-
-    repo_root = Path(__file__).resolve().parent
-    fig_out = repo_root / "imgs" / f"{args.graph}_pred_avg{len(TRAIN_SEEDS)}.png"
+    seeds = list(args.seeds)
 
     if not args.plot_only:
-        for seed in TRAIN_SEEDS:
+        for seed in seeds:
             _train_one_seed(args, seed)
 
-    save_aggregate_eval_plot(
-        output_dir=args.output_dir,
-        graph=args.graph,
-        context_str=context_str,
-        num_layers=args.num_layers,
-        train_size=args.train_size,
-        cpt_beta_alpha=float(args.cpt_beta_alpha),
-        seeds=list(TRAIN_SEEDS),
-        out_path=fig_out,
-    )
+    if args.no_plot:
+        return
+
+    # Resolve arch defaults (needs N) in case only --plot-only was requested.
+    bn = get_graph_builder(args.graph)(seed=seeds[0])
+    _resolve_model_args(args, compile_template_from_structure(bn).num_nodes)
+    repo_root = Path(__file__).resolve().parent
+    fig_out = repo_root / "imgs" / f"{args.graph}_pred_{_model_tag(args)}_{_prior_tag(args)}_avg{len(seeds)}.png"
+    save_aggregate_eval_plot(args, seeds=seeds, out_path=fig_out)
 
 
 if __name__ == "__main__":

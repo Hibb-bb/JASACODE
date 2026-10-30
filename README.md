@@ -121,3 +121,38 @@ Next, modify `train.py` so it imports `get_sprinkler` from `data/graphs.py`.
 | `quick_plot_sachs.py` | Same style for real-Sachs eval outputs (e.g. under `runs/sachs_real_eval/…`). |
 | `plot_loss.py` | Loss and TV from Lightning `metrics.csv`. |
 | `plot_loss_runs.sh` | Calls `plot_loss.py` for tree / chain / general paths aligned with `pred.sh` defaults. |
+
+___
+
+## Rebuttal experiments (theory architecture + prediction objective)
+
+Two additions address the second-round review:
+
+1. **Theorem 4.1 architecture.** `--arch theory` in `train.py` / `train_pred.py` selects
+   `TheoryTransformerBinaryHead` (`model/models.py`): one-hot input, width `(2N+1)d` by default,
+   two layers of single-head softmax attention (token never attends to itself) + square ReLU
+   feed-forward, residual connections, no LayerNorm / dropout / positional embedding, linear readout.
+   `--n-head`, `--n-embd`, `--num-layers` also apply to the GPT-2 block (`--arch gpt2`, default).
+2. **Prediction objective.** `train_pred.py` trains with cross-entropy on the realized target value.
+   `--cpt-prior uniform` (default) uses the same U(0.1,0.9) CPT prior as the main experiments;
+   `--seeds` and `--no-plot` allow one seed per SLURM task.
+
+Note: the GPT-2 "non-causal" patch now passes an explicit 4D all-zeros mask; with
+`transformers>=4.4x` flipping `attn.is_causal` alone leaves the model causal.
+
+```bash
+python slurm/make_configs.py                                   # writes slurm/configs/*.txt
+sbatch --array=1-15 slurm/array.sbatch slurm/configs/A2.txt     # one (graph, seed) per task
+python plot_rebuttal.py                                        # -> imgs/rebuttal/, summary.csv
+```
+
+| config | script | model | loss |
+|---|---|---|---|
+| ref | train.py | gpt2 L4 H8 D256 | TV |
+| A1 | train.py | gpt2 L2 H1 D256 | TV |
+| A2 (+w64, w256) | train.py | theory L2 H1 | TV |
+| B | train_pred.py | gpt2 L4 H8 D256 | cross-entropy |
+| C1 | train_pred.py | gpt2 L2 H1 D256 | cross-entropy |
+| C2 (+w256) | train_pred.py | theory L2 H1 | cross-entropy |
+
+Outputs land in `runs_rebuttal/{tv,bce}/<graph>/seed_<s>/<ctx>/<model_tag>/...`.

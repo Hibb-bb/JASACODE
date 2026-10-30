@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 
-from model import NonCausalGPT2BinaryHead, NonCausalGPT2CategoricalHead
+from model import NonCausalGPT2BinaryHead, NonCausalGPT2CategoricalHead, build_binary_model
 
 
 class ICLLightningModule(pl.LightningModule):
@@ -18,12 +18,13 @@ class ICLLightningModule(pl.LightningModule):
         max_steps: int = 100_000,
         warmup_steps: int = 1000,
         min_lr: float = 0.0,
+        arch: str = "gpt2",
         **model_kwargs,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
 
-        self.model = NonCausalGPT2BinaryHead(input_dim=input_dim, **model_kwargs)
+        self.model = build_binary_model(arch, input_dim=input_dim, **model_kwargs)
         self.init_lr = init_lr
         self.weight_decay = weight_decay
         self.max_steps = max_steps

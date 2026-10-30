@@ -6,3 +6,13 @@ runs/
 # Slurm / local logs (can exceed GitHub file limits)
 *.out
 *.err
+.venv/
+runs_rebuttal/
+runs_smoke/
+slurm/logs/
+*.pdf
+
+# Experiment outputs and checkpoints
+runs_papers/
+runs_rebuttal_50k/
+*.pt

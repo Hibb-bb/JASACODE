@@ -112,6 +112,25 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=2,
         help="Number of transformer layers.",
     )
+    # Architecture (rebuttal experiments)
+    parser.add_argument(
+        "--arch",
+        type=str,
+        default="gpt2",
+        choices=["gpt2", "theory"],
+        help="gpt2: non-causal GPT-2 block (main paper). theory: Theorem 4.1 architecture "
+             "(self-masked softmax attention + square ReLU FFN, no LayerNorm/dropout/positions, one-hot input).",
+    )
+    parser.add_argument("--n-head", type=int, default=None,
+                        help="Attention heads per layer (default: 8 for gpt2, 1 for theory).")
+    parser.add_argument("--n-embd", type=int, default=None,
+                        help="Embedding width (default: 256 for gpt2, (2N+1)*d for theory).")
+    parser.add_argument("--ffn-mult", type=int, default=1,
+                        help="theory only: FFN hidden = ffn_mult * n_embd (theorem uses 1).")
+    parser.add_argument("--dropout", type=float, default=None,
+                        help="Dropout (default: 0.1 for gpt2, 0 for theory).")
+    parser.add_argument("--layernorm", action="store_true",
+                        help="theory only: add pre-LayerNorm (off = faithful to the theorem).")
 
     # Output / misc
     parser.add_argument(
@@ -129,6 +148,29 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
     args = parser.parse_args(argv)
     return args
+
+
+def resolve_model_args(args, num_nodes: int) -> None:
+    """Fill arch-dependent defaults in place."""
+    if args.n_head is None:
+        args.n_head = 8 if args.arch == "gpt2" else 1
+    if args.n_embd is None:
+        args.n_embd = 256 if args.arch == "gpt2" else (2 * num_nodes + 1) * 2
+    if args.dropout is None:
+        args.dropout = 0.1 if args.arch == "gpt2" else 0.0
+
+
+def model_tag(args) -> str:
+    """Run-dir component. Default gpt2 config keeps the legacy 'L{n}' name."""
+    if args.arch == "gpt2" and args.n_head == 8 and args.n_embd == 256:
+        return f"L{args.num_layers}"
+    tag = f"{args.arch}_L{args.num_layers}H{args.n_head}D{args.n_embd}"
+    if args.arch == "theory":
+        if args.ffn_mult != 1:
+            tag += f"F{args.ffn_mult}"
+        if args.layernorm:
+            tag += "LN"
+    return tag
 
 
 def evaluate(args, model, run_dir):
@@ -166,7 +208,7 @@ def evaluate(args, model, run_dir):
         num_episodes=args.test_size,
         seed=args.seed,
         output_csv=run_dir + "_eval_tv.csv",
-        device="cuda",
+        device="cuda" if torch.cuda.is_available() else "cpu",
         infer_batch_size=16,
     )
     # evaluate_tv_over_context(model, template, p1_list, spec)
@@ -337,6 +379,9 @@ def main():
     print("Compiling template...")
 
     template = compile_template_from_structure(bn)
+    resolve_model_args(args, template.num_nodes)
+    print(f"Model: arch={args.arch} L={args.num_layers} H={args.n_head} D={args.n_embd} "
+          f"dropout={args.dropout} ffn_mult={args.ffn_mult} layernorm={args.layernorm}")
 
     pl.seed_everything(args.seed, workers=False)
 
@@ -399,12 +444,15 @@ def main():
         max_steps=args.train_step,
         warmup_steps=args.warmup_steps,
         min_lr=args.min_lr,
-        n_embd=256,
+        arch=args.arch,
+        n_embd=args.n_embd,
         n_layer=args.num_layers,
-        n_head=8,
-        dropout=0.1,
+        n_head=args.n_head,
+        dropout=args.dropout,
         max_seq_len=max_seq_len,
         disable_causal=True,   # best-effort patch
+        ffn_mult=args.ffn_mult,
+        layernorm=args.layernorm,
     )
 
     # ---- Logging + Trainer
@@ -418,7 +466,7 @@ def main():
         args.graph,
         f"seed_{args.seed}",
         context_str,
-        f"L{args.num_layers}",
+        model_tag(args),
         str(args.train_size),
     )
     os.makedirs(run_dir, exist_ok=True)
