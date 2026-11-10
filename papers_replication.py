@@ -62,31 +62,9 @@ lcjepa.loss_fn = _recording_loss_fn
 os.makedirs("loss_curves", exist_ok=True)
 
 def plot_loss_curves(var):
-    import glob, matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    tag = var.replace("+", "_")
-    dfs = {int(f.split("_s")[-1][:-4]): pd.read_csv(f) for f in sorted(glob.glob(f"loss_curves/{tag}_s*.csv"))}
-    if not dfs:
-        return
-    terms = [c for c in next(iter(dfs.values())).columns if c != "step"]
-    nc = 3; nr = int(np.ceil(len(terms) / nc))
-    fig, axes = plt.subplots(nr, nc, figsize=(4.2 * nc, 3.0 * nr), squeeze=False)
-    win = max(1, STEPS // 100)
-    for ax, term in zip(axes.flat, terms):
-        for seed, df in dfs.items():
-            y = df[term]
-            ax.plot(df["step"], y, alpha=0.15, lw=0.5, color=f"C{seed % 10}")
-            ax.plot(df["step"], y.rolling(win, min_periods=1).mean(), lw=1.2, color=f"C{seed % 10}", label=f"seed {seed}")
-        if (pd.concat([d[term] for d in dfs.values()]) > 0).all():
-            ax.set_yscale("log")
-        ax.set_title(term); ax.set_xlabel("step"); ax.grid(alpha=0.3)
-    for ax in list(axes.flat)[len(terms):]:
-        ax.axis("off")
-    axes.flat[0].legend(fontsize=7)
-    fig.suptitle(f"{var}  ({'realistic' if args.realistic else 'clean'} data)")
-    fig.tight_layout()
-    fig.savefig(f"loss_curves/{tag}.png", dpi=130); plt.close(fig)
+    from plot_loss_curves import plot_variant
+    plot_variant(".", var.replace("+", "_"),
+                 title=f"{var}  ({'realistic' if args.realistic else 'clean'} data)", logx=True)
 
 # ---- cell 5: train and probe
 results = {}
