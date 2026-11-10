@@ -16,3 +16,4 @@ slurm/logs/
 runs_papers/
 runs_rebuttal_50k/
 *.pt
+runs_sachs_thm/

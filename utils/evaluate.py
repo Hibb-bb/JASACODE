@@ -115,6 +115,68 @@ def _tv_categorical_safe(p: np.ndarray, q: np.ndarray) -> np.ndarray:
     return np.where(np.isfinite(tv), tv, 1.0)
 
 
+KL_EPS = 1e-6
+
+
+def kl_divergence_safe(p_true: np.ndarray, p_hat: np.ndarray, eps: float = KL_EPS) -> np.ndarray:
+    """
+    KL(p_true || p_hat) in nats, row-wise.
+
+    Accepts Bernoulli parameters (shape (B,), P(X=1)) or categorical vectors (shape (B, K)).
+    Conventions (needed because count-based baselines often predict exactly 0 or 1, where
+    KL is infinite, or have no matching context rows, where they are undefined):
+      - a non-finite prediction (no matching context rows) is replaced by the uniform distribution;
+      - predictions are clipped to [eps, 1 - eps] and renormalised.
+    p_true is used as given (0 * log 0 = 0).
+    """
+    p_true = np.asarray(p_true, dtype=np.float64)
+    p_hat = np.asarray(p_hat, dtype=np.float64)
+    if p_true.ndim == 1:
+        p_true = np.stack([1.0 - p_true, p_true], axis=-1)
+        p_hat = np.stack([1.0 - p_hat, p_hat], axis=-1)
+    K = p_hat.shape[-1]
+    bad = ~np.all(np.isfinite(p_hat), axis=-1, keepdims=True)
+    q = np.where(bad, 1.0 / K, p_hat)
+    q = np.clip(q, eps, 1.0 - eps)
+    q = q / q.sum(axis=-1, keepdims=True)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        terms = np.where(p_true > 0, p_true * (np.log(p_true) - np.log(q)), 0.0)
+    return terms.sum(axis=-1)
+
+
+def categorical_kl_fieldnames(K: int) -> List[str]:
+    """Extra CSV columns: KL per predictor plus the full probability vectors (for re-analysis)."""
+    cols = ["kl_model", "kl_naive", "kl_bayes"]
+    for name in ("p_true", "p_model", "p_naive", "p_bayes"):
+        cols += [f"{name}_{k}" for k in range(K)]
+    return cols
+
+
+def categorical_kl_rows(p_true, p_model, p_naive, p_bayes, naive_tot, bayes_tot, m) -> List[dict]:
+    """
+    Per-episode dicts with KL(p_true || .) and probability vectors. A baseline with no matching
+    context rows (or m == 0 for naive) has an undefined estimate: it is stored as NaN and scored
+    as the uniform distribution by kl_divergence_safe.
+    """
+    p_naive = np.array(p_naive, dtype=np.float64, copy=True)
+    p_bayes = np.array(p_bayes, dtype=np.float64, copy=True)
+    naive_undef = (np.asarray(naive_tot) == 0) | (m == 0)
+    p_naive[naive_undef, :] = np.nan
+    p_bayes[np.asarray(bayes_tot) == 0, :] = np.nan
+    kl_m = kl_divergence_safe(p_true, p_model)
+    kl_n = kl_divergence_safe(p_true, p_naive)
+    kl_b = kl_divergence_safe(p_true, p_bayes)
+    K = p_true.shape[1]
+    rows = []
+    for i in range(p_true.shape[0]):
+        r = {"kl_model": float(kl_m[i]), "kl_naive": float(kl_n[i]), "kl_bayes": float(kl_b[i])}
+        for name, arr in (("p_true", p_true), ("p_model", p_model), ("p_naive", p_naive), ("p_bayes", p_bayes)):
+            for k in range(K):
+                r[f"{name}_{k}"] = float(arr[i, k])
+        rows.append(r)
+    return rows
+
+
 def _naive_graph_agnostic_from_context_bn(
     X_full: np.ndarray,
     target_index: int,
@@ -445,7 +507,7 @@ def evaluate_tv_over_context_categorical_with_baselines(
         "context_len", "target_index", "episode",
         "y_test", "parents_cfg",
         "tv_model", "tv_naive", "tv_bayes",
-    ]
+    ] + categorical_kl_fieldnames(template.cardinality)
     with out_path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -498,9 +560,13 @@ def evaluate_tv_over_context_categorical_with_baselines(
                         X_full, template, t,
                     )
                     tv_bayes = np.where(bayes_tot == 0, 1.0, tv_bayes)
+                    kl_rows = categorical_kl_rows(
+                        p_true, p_hat_model, p_hat_naive, p_hat_bayes, naive_tot, bayes_tot, m
+                    )
 
                     for bi in range(B):
                         writer.writerow({
+                            **kl_rows[bi],
                             "context_len": int(m),
                             "target_index": int(t),
                             "episode": int(episode_offset + bi),

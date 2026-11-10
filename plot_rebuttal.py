@@ -67,10 +67,34 @@ def discover(root: Path) -> Dict[Tuple[str, str, str], Dict[int, Path]]:
     return found
 
 
+# Metric being plotted. Internally the columns keep the names tv_model / tv_naive / tv_bayes;
+# with --metric kl they hold KL(p_true || p_hat) computed from the stored probabilities.
+METRIC = {"name": "tv", "ylabel": "TV Distance", "log_y": False}
+
+
+def _apply_metric(df: pd.DataFrame) -> pd.DataFrame:
+    if METRIC["name"] == "tv":
+        return df
+    from utils.evaluate import kl_divergence_safe
+    df = df.copy()
+    if "p_hat_model" in df.columns:  # binary CSVs store Bernoulli parameters
+        for src, dst in (("p_hat_model", "tv_model"), ("p_hat_naive", "tv_naive"), ("p_hat_bayes", "tv_bayes")):
+            df[dst] = kl_divergence_safe(df["p_true"].values, df[src].values)
+    else:  # categorical CSVs carry kl_* columns
+        for k in ("model", "naive", "bayes"):
+            df[f"tv_{k}"] = df[f"kl_{k}"]
+    return df
+
+
+def _finish_axis(ax) -> None:
+    if METRIC["log_y"]:
+        ax.set_yscale("log")
+
+
 def load_group(paths: Dict[int, Path]) -> pd.DataFrame:
     rows = []
     for seed, p in sorted(paths.items()):
-        df = pd.read_csv(p)
+        df = _apply_metric(pd.read_csv(p))
         v = (df.groupby(["context_len", "target_index"], as_index=False)[["tv_model", "tv_naive", "tv_bayes"]]
              .mean().rename(columns={"context_len": "num_examples"}))
         v["seed"] = seed
@@ -101,16 +125,18 @@ def plot_2x2(wide: pd.DataFrame, title: str, out: Path) -> None:
         if legend:
             ax.legend(fontsize=14, loc="upper right")
 
-    panel(axes[0, 0], "tv_model", "Transformer", True); axes[0, 0].set_ylabel("TV Distance")
+    panel(axes[0, 0], "tv_model", "Transformer", True); axes[0, 0].set_ylabel(METRIC["ylabel"])
     panel(axes[0, 1], "tv_bayes", "Bayesian Inference", False)
     panel(axes[1, 0], "tv_naive", "Naive Inference", False)
-    axes[1, 0].set_ylabel("TV Distance"); axes[1, 0].set_xlabel("Number of Examples")
+    axes[1, 0].set_ylabel(METRIC["ylabel"]); axes[1, 0].set_xlabel("Number of Examples")
     ax = axes[1, 1]
     for col, lab in [("tv_model", "Transformer"), ("tv_naive", "Naive"), ("tv_bayes", "Bayes")]:
         sub = avg.sort_values("num_examples")
         yerr = sub[f"{col}_std"].values
         yerr = None if np.any(np.isnan(yerr)) else yerr
         ax.errorbar(sub["num_examples"], sub[f"{col}_mean"], yerr=yerr, marker="o", label=lab, capsize=3)
+    for a in axes.flat:
+        _finish_axis(a)
     ax.set_title("Averaged Across Nodes"); ax.set_xlabel("Number of Examples"); ax.grid(True, alpha=0.3)
     ax.legend(fontsize=14, loc="upper right")
     for a, lab in zip(axes.flat, ["(a)", "(b)", "(c)", "(d)"]):
@@ -143,7 +169,7 @@ def plot_summary(groups: Dict[str, pd.DataFrame], title: str, out: Path,
         yerr = None if np.any(np.isnan(yerr)) else yerr
         ax.errorbar(avg["num_examples"], avg["tv_model_mean"], yerr=yerr, marker="o", capsize=3,
                     label=labels.get(tag, tag))
-    ax.set_xlabel("Number of Examples"); ax.set_ylabel("TV Distance (avg. over nodes)")
+    ax.set_xlabel("Number of Examples"); ax.set_ylabel(f"{METRIC['ylabel']} (avg. over nodes)"); _finish_axis(ax)
     ax.set_title(title, fontsize=FONT_SIZE); ax.grid(True, alpha=0.3); ax.legend(fontsize=12)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout(); plt.savefig(out, dpi=300, bbox_inches="tight"); plt.close()
@@ -154,8 +180,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="runs_rebuttal")
     ap.add_argument("--out", default="imgs/rebuttal")
-    ap.add_argument("--summary-csv", default="imgs/rebuttal/summary.csv")
+    ap.add_argument("--summary-csv", default=None, help="default: <out>/summary.csv")
+    ap.add_argument("--metric", choices=["tv", "kl"], default="tv",
+                    help="kl = KL(p_true || p_hat) in nats, predictions clipped to [1e-6, 1-1e-6]")
+    ap.add_argument("--log-y", action="store_true", help="log-scale y axis")
     args = ap.parse_args()
+    METRIC["log_y"] = args.log_y
+    if args.metric == "kl":
+        METRIC.update(name="kl", ylabel="KL Divergence")
+    if args.summary_csv is None:
+        args.summary_csv = str(Path(args.out) / "summary.csv")
     root, out = Path(args.root), Path(args.out)
     found = discover(root)
     if not found:

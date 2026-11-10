@@ -18,6 +18,8 @@ from .evaluate import (
     _naive_context_tot_at_prefix_cat,
     _bayes_cpt_from_context_categorical,
     _tv_categorical_safe,
+    categorical_kl_fieldnames,
+    categorical_kl_rows,
 )
 
 
@@ -194,7 +196,7 @@ def evaluate_tv_over_context_categorical_real(
         "tv_model",
         "tv_naive",
         "tv_bayes",
-    ]
+    ] + categorical_kl_fieldnames(K)
 
     rng = np.random.default_rng(spec.seed)
 
@@ -257,10 +259,14 @@ def evaluate_tv_over_context_categorical_real(
                         X_full, template, t,
                     )
                     tv_bayes = np.where(bayes_tot == 0, 1.0, tv_bayes)
+                    kl_rows = categorical_kl_rows(
+                        p_true, p_hat_model, p_hat_naive, p_hat_bayes, naive_tot, bayes_tot, m
+                    )
 
                     for bi in range(B):
                         writer.writerow(
                             {
+                                **kl_rows[bi],
                                 "treatment": treatment_name,
                                 "context_len": int(m),
                                 "target_index": int(t),

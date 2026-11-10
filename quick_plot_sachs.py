@@ -37,10 +37,19 @@ def flatten_cols(cols) -> List[str]:
     return out
 
 
+# With --metric kl the tv_* columns are overwritten by kl_* (KL(p_true || p_hat), nats).
+METRIC = {"name": "tv", "ylabel": "TV Distance", "log_y": False}
+
+
 def plot_one_treatment(treatment: str, seed_csvs: Dict[int, Path], out_path: Path) -> None:
     rows = []
     for seed, csv_path in seed_csvs.items():
         df = pd.read_csv(csv_path)
+        if METRIC["name"] == "kl":
+            if "kl_model" not in df.columns:
+                raise SystemExit(f"{csv_path} has no KL columns; re-run the evaluation first")
+            for k in ("model", "naive", "bayes"):
+                df[f"tv_{k}"] = df[f"kl_{k}"]
         # Aggregate per (context_len, target_index) for this seed (mean over episodes)
         seed_vals = (
             df.groupby(["context_len", "target_index"], as_index=False)[
@@ -101,7 +110,9 @@ def plot_one_treatment(treatment: str, seed_csvs: Dict[int, Path], out_path: Pat
             )
         ax.set_title(title)
         ax.set_xlabel("Number of Examples")
-        ax.set_ylabel("TV Distance")
+        ax.set_ylabel(METRIC["ylabel"])
+        if METRIC["log_y"]:
+            ax.set_yscale("log")
         ax.grid(True, alpha=0.3)
         if show_legend:
             ax.legend(fontsize=14, loc="upper right")
@@ -128,6 +139,8 @@ def plot_one_treatment(treatment: str, seed_csvs: Dict[int, Path], out_path: Pat
         if np.any(np.isnan(yerr)):
             yerr = None
         ax_br.errorbar(x, y, yerr=yerr, marker="o", label=label, capsize=3, capthick=1)
+    if METRIC["log_y"]:
+        ax_br.set_yscale("log")
     ax_br.set_title("Averaged Across Nodes")
     ax_br.set_xlabel("Number of Examples")
     ax_br.set_ylabel("")
@@ -178,7 +191,13 @@ def main() -> None:
         default=[1111, 2222, 3333, 4444, 5555],
         help="Seeds to aggregate.",
     )
+    ap.add_argument("--metric", choices=["tv", "kl"], default="tv",
+                    help="kl = KL(p_true || p_hat) in nats (needs CSVs with kl_* columns)")
+    ap.add_argument("--log-y", action="store_true", help="log-scale y axis")
     args = ap.parse_args()
+    METRIC["log_y"] = args.log_y
+    if args.metric == "kl":
+        METRIC.update(name="kl", ylabel="KL Divergence")
 
     base = Path(args.base_dir)
     out_dir = Path(args.out_dir)

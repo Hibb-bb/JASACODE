@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 
-from model import NonCausalGPT2BinaryHead, NonCausalGPT2CategoricalHead, build_binary_model
+from model import NonCausalGPT2BinaryHead, NonCausalGPT2CategoricalHead, build_binary_model, build_categorical_model
 
 
 class ICLLightningModule(pl.LightningModule):
@@ -106,12 +106,17 @@ class ICLLightningModuleCategorical(pl.LightningModule):
         max_steps: int = 100_000,
         warmup_steps: int = 1000,
         min_lr: float = 0.0,
+        arch: str = "gpt2",
+        loss: str = "tv",
         **model_kwargs,
     ) -> None:
         super().__init__()
         self.save_hyperparameters()
-        self.model = NonCausalGPT2CategoricalHead(
-            input_dim=input_dim, num_classes=num_classes, **model_kwargs
+        if loss not in ("tv", "ce"):
+            raise ValueError(f"loss must be 'tv' or 'ce', got {loss!r}")
+        self.loss_type = loss
+        self.model = build_categorical_model(
+            arch, input_dim=input_dim, num_classes=num_classes, **model_kwargs
         )
         self.num_classes = num_classes
         self.init_lr = init_lr
@@ -128,8 +133,15 @@ class ICLLightningModuleCategorical(pl.LightningModule):
         y = batch["y"]  # (B, K) empirical CPT (soft labels)
         logits = self(x)  # (B, K)
         p_hat = F.softmax(logits, dim=1)
-        # L1 on probability vectors (mean ℓ1 per example); same gradient shape as minimizing 2×TV.
-        loss = (p_hat - y.float()).abs().sum(dim=1).mean()
+        if self.loss_type == "ce":
+            # Predictive objective: cross-entropy on the realized value of the target node in
+            # the test row (batch["full"] holds the unmasked sequence). y is used only for logging.
+            t = int(batch["target_index"])
+            y_cls = batch["full"][:, -1, t].long()
+            loss = F.cross_entropy(logits, y_cls)
+        else:
+            # L1 on probability vectors (mean ℓ1 per example); same gradient shape as minimizing 2×TV.
+            loss = (p_hat - y.float()).abs().sum(dim=1).mean()
         with torch.no_grad():
             tv = 0.5 * (torch.abs(p_hat - y.float()).sum(dim=1)).mean()
         try:

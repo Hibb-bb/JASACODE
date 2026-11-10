@@ -121,6 +121,19 @@ def get_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--arch",
+        type=str,
+        default="gpt2",
+        choices=["gpt2", "theory"],
+        help="gpt2 = GPT-2 block (paper); theory = Theorem 4.1 model (self-masked softmax, ReLU FFN, no LN).",
+    )
+    parser.add_argument("--loss", type=str, default="tv", choices=["tv", "ce"],
+                        help="tv = L1/TV on empirical CPT (paper); ce = cross-entropy on realized target value.")
+    parser.add_argument("--n-head", type=int, default=None, help="Heads (default 8 for gpt2, 1 for theory).")
+    parser.add_argument("--n-embd", type=int, default=None,
+                        help="Width (default 256 for gpt2, (2N+1)K for theory).")
+
+    parser.add_argument(
         "--precision",
         type=str,
         default="32-true",
@@ -168,7 +181,7 @@ def evaluate(args, model, run_dir):
         num_episodes=args.test_size,
         seed=123,
         output_csv=run_dir + "_eval_tv.csv",
-        device="cuda",
+        device="cuda" if torch.cuda.is_available() else "cpu",
         infer_batch_size=32,
     )
     evaluate_tv_over_context_categorical_with_baselines(
@@ -381,6 +394,23 @@ def main():
     # Add some buffer for safety
     max_seq_len = max(max_seq_len, 500 + 1)
     
+    N, K = template.num_nodes, template.cardinality
+    if args.arch == "gpt2":
+        n_head = args.n_head or 8
+        n_embd = args.n_embd or 256
+        model_kwargs = dict(n_embd=n_embd, n_layer=args.num_layers, n_head=n_head,
+                            dropout=0.1, max_seq_len=max_seq_len, disable_causal=True)
+        is_default = (n_head == 8 and n_embd == 256)
+        model_tag = f"L{args.num_layers}" if is_default else f"gpt2_L{args.num_layers}H{n_head}D{n_embd}"
+    else:
+        n_head = args.n_head or 1
+        n_embd = args.n_embd or (2 * N + 1) * K   # width from Theorem 4.1
+        model_kwargs = dict(n_embd=n_embd, n_layer=args.num_layers, n_head=n_head)
+        model_tag = f"theory_L{args.num_layers}H{n_head}D{n_embd}"
+    if args.loss == "ce":
+        model_tag += "_ce"
+    print(f"Model: arch={args.arch} loss={args.loss} tag={model_tag} kwargs={model_kwargs}")
+
     lit = ICLLightningModuleCategorical(
         input_dim=input_dim,
         num_classes=template.cardinality,
@@ -388,12 +418,9 @@ def main():
         max_steps=args.train_step,
         warmup_steps=args.warmup_steps,
         min_lr=args.min_lr,
-        n_embd=256,
-        n_layer=args.num_layers,
-        n_head=8,
-        dropout=0.1,
-        max_seq_len=max_seq_len,
-        disable_causal=True,
+        arch=args.arch,
+        loss=args.loss,
+        **model_kwargs,
     )
 
     # ---- Logging + Trainer
@@ -407,7 +434,7 @@ def main():
         args.graph,
         f"seed_{args.seed}",
         context_str,
-        f"L{args.num_layers}",
+        model_tag,
         str(args.train_size),
     )
     os.makedirs(run_dir, exist_ok=True)

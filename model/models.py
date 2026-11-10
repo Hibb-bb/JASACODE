@@ -323,6 +323,41 @@ class TheoryTransformerBinaryHead(nn.Module):
         return self.read_out(h[:, -1, :]).squeeze(-1)
 
 
+class TheoryTransformerCategoricalHead(TheoryTransformerBinaryHead):
+    """
+    K-class version of TheoryTransformerBinaryHead (Theorem 4.1 architecture).
+
+    Same one-hot encoding, read-in, 2 self-masked single-head softmax blocks with a
+    ReLU feed-forward, no LayerNorm/dropout/positions. Default width (2N+1)K.
+    Read-out is Linear(n_embd -> K); forward returns logits (B, K).
+    """
+
+    def __init__(self, input_dim: int, num_classes: int = 3, **kwargs) -> None:
+        super().__init__(input_dim=input_dim, num_classes=num_classes, **kwargs)
+        self.read_out = nn.Linear(self.n_embd, self.num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() != 3:
+            raise ValueError(f"Expected x (B,L,D), got {tuple(x.shape)}")
+        h = self.read_in(self.encode(x))
+        for blk in self.blocks:
+            h = blk(h)
+        return self.read_out(h[:, -1, :])
+
+
+def build_categorical_model(arch: str, input_dim: int, num_classes: int, **kwargs) -> nn.Module:
+    """Factory for K-class heads. arch in {"gpt2", "theory"}."""
+    if arch == "gpt2":
+        gpt2_keys = {"n_embd", "n_layer", "n_head", "dropout", "max_seq_len", "disable_causal"}
+        return NonCausalGPT2CategoricalHead(
+            input_dim=input_dim, num_classes=num_classes,
+            **{k: v for k, v in kwargs.items() if k in gpt2_keys},
+        )
+    if arch == "theory":
+        return TheoryTransformerCategoricalHead(input_dim=input_dim, num_classes=num_classes, **kwargs)
+    raise ValueError(f"Unknown arch {arch!r}; expected 'gpt2' or 'theory'")
+
+
 def build_binary_model(arch: str, input_dim: int, **kwargs) -> nn.Module:
     """Factory used by the Lightning modules. arch in {"gpt2", "theory"}."""
     if arch == "gpt2":
