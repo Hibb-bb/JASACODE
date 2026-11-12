@@ -38,7 +38,7 @@ def flatten_cols(cols) -> List[str]:
 
 
 # With --metric kl the tv_* columns are overwritten by kl_* (KL(p_true || p_hat), nats).
-METRIC = {"name": "tv", "ylabel": "TV Distance", "log_y": False}
+METRIC = {"name": "tv", "ylabel": "TV Distance", "log_y": False, "x_range": None}
 
 
 def plot_one_treatment(treatment: str, seed_csvs: Dict[int, Path], out_path: Path) -> None:
@@ -59,6 +59,8 @@ def plot_one_treatment(treatment: str, seed_csvs: Dict[int, Path], out_path: Pat
             .rename(columns={"context_len": "num_examples"})
         )
         seed_vals["seed"] = seed
+        if METRIC["x_range"]:
+            seed_vals = seed_vals[seed_vals["num_examples"].between(*METRIC["x_range"])]
         rows.append(seed_vals)
 
     wide_df = pd.concat(rows, ignore_index=True)
@@ -85,7 +87,8 @@ def plot_one_treatment(treatment: str, seed_csvs: Dict[int, Path], out_path: Pat
 
     target_indices = sorted(agg["target_index"].unique())
     n_targets = len(target_indices)
-    target_colors = plt.cm.tab10(np.arange(n_targets))
+    # tab10 has 10 colours; Sachs has 11 nodes, so extra nodes get distinct greys/black.
+    target_colors = list(plt.cm.tab10(np.arange(min(n_targets, 10)))) + ["black", "0.45"][: max(0, n_targets - 10)]
 
     fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 9), sharex=True, sharey=True)
 
@@ -115,7 +118,7 @@ def plot_one_treatment(treatment: str, seed_csvs: Dict[int, Path], out_path: Pat
             ax.set_yscale("log")
         ax.grid(True, alpha=0.3)
         if show_legend:
-            ax.legend(fontsize=14, loc="upper right")
+            ax.legend(fontsize=14, loc="upper right", ncol=2)
 
     # (a) Transformer
     plot_panel(axes[0, 0], agg, "tv_model_mean", "tv_model_std", "Transformer", show_legend=True)
@@ -194,8 +197,11 @@ def main() -> None:
     ap.add_argument("--metric", choices=["tv", "kl"], default="tv",
                     help="kl = KL(p_true || p_hat) in nats (needs CSVs with kl_* columns)")
     ap.add_argument("--log-y", action="store_true", help="log-scale y axis")
+    ap.add_argument("--x-range", type=int, nargs=2, metavar=("MIN", "MAX"), default=None,
+                    help="only plot context lengths in [MIN, MAX] (zoomed figures)")
     args = ap.parse_args()
     METRIC["log_y"] = args.log_y
+    METRIC["x_range"] = args.x_range
     if args.metric == "kl":
         METRIC.update(name="kl", ylabel="KL Divergence")
 

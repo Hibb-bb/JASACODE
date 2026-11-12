@@ -102,17 +102,16 @@ def load_group(paths: Dict[int, Path]) -> pd.DataFrame:
     return pd.concat(rows, ignore_index=True)
 
 
-def plot_2x2(wide: pd.DataFrame, title: str, out: Path) -> None:
+def draw_2x2(axes, wide: pd.DataFrame) -> None:
+    """Draw the Transformer / Bayes / Naive / averaged block onto a 2x2 array of axes."""
     agg = wide.groupby(["num_examples", "target_index"])[["tv_model", "tv_naive", "tv_bayes"]].agg(["mean", "std"]).reset_index()
     agg.columns = [_flatten(c) for c in agg.columns]
     per_seed = wide.groupby(["num_examples", "seed"], as_index=False)[["tv_model", "tv_naive", "tv_bayes"]].mean()
     avg = per_seed.groupby("num_examples")[["tv_model", "tv_naive", "tv_bayes"]].agg(["mean", "std"]).reset_index()
     avg.columns = [_flatten(c) for c in avg.columns]
 
-    plt.rcParams.update(PLOT_RC)
     targets = sorted(agg["target_index"].unique())
     colors = plt.cm.tab10(np.arange(len(targets)))
-    fig, axes = plt.subplots(2, 2, figsize=(10, 9), sharex=True, sharey=True)
 
     def panel(ax, col, ttl, legend):
         for i, t in enumerate(targets):
@@ -141,6 +140,12 @@ def plot_2x2(wide: pd.DataFrame, title: str, out: Path) -> None:
     ax.legend(fontsize=14, loc="upper right")
     for a, lab in zip(axes.flat, ["(a)", "(b)", "(c)", "(d)"]):
         a.text(0.02, 0.98, lab, transform=a.transAxes, fontsize=FONT_SIZE, fontweight="bold", va="top", ha="left")
+
+
+def plot_2x2(wide: pd.DataFrame, title: str, out: Path) -> None:
+    plt.rcParams.update(PLOT_RC)
+    fig, axes = plt.subplots(2, 2, figsize=(10, 9), sharex=True, sharey=True)
+    draw_2x2(axes, wide)
     fig.suptitle(title, fontsize=FONT_SIZE + 2, y=0.93)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -184,6 +189,9 @@ def main():
     ap.add_argument("--metric", choices=["tv", "kl"], default="tv",
                     help="kl = KL(p_true || p_hat) in nats, predictions clipped to [1e-6, 1-1e-6]")
     ap.add_argument("--log-y", action="store_true", help="log-scale y axis")
+    ap.add_argument("--x-range", type=int, nargs=2, metavar=("MIN", "MAX"), default=None,
+                    help="only plot context lengths in [MIN, MAX] (zoomed figures)")
+    ap.add_argument("--loss", choices=["tv", "bce"], default=None, help="only this training loss")
     args = ap.parse_args()
     METRIC["log_y"] = args.log_y
     if args.metric == "kl":
@@ -192,6 +200,8 @@ def main():
         args.summary_csv = str(Path(args.out) / "summary.csv")
     root, out = Path(args.root), Path(args.out)
     found = discover(root)
+    if args.loss:
+        found = {k: v for k, v in found.items() if k[0] == args.loss}
     if not found:
         raise SystemExit(f"no eval CSVs under {root}")
 
@@ -203,6 +213,8 @@ def main():
         if missing:
             print(f"[{loss}/{graph}/{tag}] missing seeds {missing} (using {len(paths)})")
         wide = load_group(paths)
+        if args.x_range:
+            wide = wide[wide["num_examples"].between(*args.x_range)]
         loaded[key] = wide
         plot_2x2(wide, f"{GRAPH_TITLE.get(graph, graph)} - {MODEL_LABEL_SHORT.get(tag, tag)}\n{LOSS_TITLE[loss]}",
                  out / loss / f"{graph}_{tag}.png")
