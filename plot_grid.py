@@ -1,4 +1,4 @@
-"""Big grid of the per-config 2x2 blocks: rows = graph (general, chain, tree),
+"""Big grid of the per-config 2x2 blocks: rows = graph (chain, tree, general),
 columns = 5-node / 7-node versions. One figure per x-range.
 
   python plot_grid.py --metric kl --loss bce --out figures_thm/grid/kl_ce.png
@@ -14,9 +14,9 @@ import matplotlib.pyplot as plt
 import plot_rebuttal as pr
 
 # (row label, 5-node graph, 7-node graph); the narrow theorem model for each.
-ROWS = [("General graph", "general", "general7"),
-        ("Chain", "chain5", "chain"),
-        ("Tree", "tree5", "tree")]
+ROWS = [("Chain", "chain5", "chain"),
+        ("Tree", "tree5", "tree"),
+        ("General", "general", "general7")]
 COLS = ["5 node", "7 node"]
 THM_TAG = {"general": "theory_L2H1D22", "general7": "theory_L2H1D30",
            "chain5": "theory_L2H1D22", "chain": "theory_L2H1D30",
@@ -44,7 +44,7 @@ def main():
     sub = fig.subfigures(3, 3, width_ratios=[0.05, 1, 1], hspace=0.025, wspace=0.0)
     for r, (row_label, g5, g7) in enumerate(ROWS):
         sub[r, 0].text(0.5, 0.5, row_label, rotation=90, ha="center", va="center",
-                       fontsize=pr.FONT_SIZE + 12, fontweight="bold")
+                       fontsize=pr.FONT_SIZE + 4, fontweight="bold")
         for c, g in enumerate((g5, g7)):
             key = (args.loss, g, THM_TAG[g])
             if key not in found:
@@ -59,7 +59,7 @@ def main():
                 for a in axes[:, 0]:
                     a.set_ylabel(" ")
             if r == 0:
-                sf.suptitle(COLS[c], fontsize=pr.FONT_SIZE + 12, fontweight="bold")
+                sf.suptitle(COLS[c], fontsize=pr.FONT_SIZE + 4, fontweight="bold")
     out = Path(args.out); out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=200, bbox_inches="tight"); plt.close(fig)
     print("saved", out)

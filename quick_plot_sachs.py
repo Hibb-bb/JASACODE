@@ -41,7 +41,8 @@ def flatten_cols(cols) -> List[str]:
 METRIC = {"name": "tv", "ylabel": "TV Distance", "log_y": False, "x_range": None}
 
 
-def plot_one_treatment(treatment: str, seed_csvs: Dict[int, Path], out_path: Path) -> None:
+def draw_treatment(axes, seed_csvs: Dict[int, Path]) -> None:
+    """Draw the Transformer / Bayes / Naive / averaged block onto a 2x2 array of axes."""
     rows = []
     for seed, csv_path in seed_csvs.items():
         df = pd.read_csv(csv_path)
@@ -89,8 +90,6 @@ def plot_one_treatment(treatment: str, seed_csvs: Dict[int, Path], out_path: Pat
     n_targets = len(target_indices)
     # tab10 has 10 colours; Sachs has 11 nodes, so extra nodes get distinct greys/black.
     target_colors = list(plt.cm.tab10(np.arange(min(n_targets, 10)))) + ["black", "0.45"][: max(0, n_targets - 10)]
-
-    fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 9), sharex=True, sharey=True)
 
     def plot_panel(ax, df_agg, mean_col, std_col, title, show_legend):
         for i, t in enumerate(target_indices):
@@ -163,6 +162,10 @@ def plot_one_treatment(treatment: str, seed_csvs: Dict[int, Path], out_path: Pat
             ha="left",
         )
 
+
+def plot_one_treatment(treatment: str, seed_csvs: Dict[int, Path], out_path: Path) -> None:
+    fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 9), sharex=True, sharey=True)
+    draw_treatment(axes, seed_csvs)
     fig.suptitle(f"Sachs real data: {pretty_treatment(treatment)}", fontsize=FONT_SIZE + 6, y=0.90)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     out_path.parent.mkdir(parents=True, exist_ok=True)
